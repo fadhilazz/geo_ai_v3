@@ -51,6 +51,22 @@ curl -X POST "http://127.0.0.1:8000/ask" \
   -d '{"question": "Dimana outflow zone di Semurup?", "field": "Semurup"}'
 ```
 
+### 🆓 **Free-form Examples (no need to use template phrasing)**
+
+```bash
+# Specific questions with field detection
+curl -s -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" \
+  -d "{\"question\":\"Best reservoir rock type and depth in Semurup?\"}"
+
+# General questions without specific field
+curl -s -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" \
+  -d "{\"question\":\"Explain typical caprock lithologies in Indonesian volcanic settings\"}"
+
+# Vague question triggers clarifier (returns options)
+curl -s -X POST http://127.0.0.1:8000/ask -H "Content-Type: application/json" \
+  -d "{\"question\":\"What's going on structurally here?\"}"
+```
+
 ### 📖 **Literature Ingestion**
 
 ```bash

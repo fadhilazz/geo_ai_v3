@@ -1,9 +1,17 @@
-# Geo AI v3 - Literature Ingestion Pipeline
+# Geo AI v3 - Complete Geothermal AI Agent
 
-A robust ingestion pipeline that loads geothermal literature taxonomy from Excel, extracts text chunks and figure images from PDFs, classifies content using typo-tolerant matching, and embeds into persistent Chroma vector stores.
+AI agent for geothermal geoscientist interpretation with comprehensive RAG system, literature ingestion pipeline, and Semurup data integration.
 
 ## Features
 
+### 🚀 **Complete RAG System**
+- **Question Matrix Integration**: Intent-driven retrieval strategies
+- **Field Detection**: Automatic geothermal field identification
+- **Multi-modal Retrieval**: Text + Image evidence synthesis
+- **Comprehensive Analysis**: Up to 12 text chunks + 6 images
+- **Direct Data Integration**: Semurup-specific fallback data
+
+### 📚 **Literature Ingestion Pipeline**
 - **Windows-optimized paths** with proper raw string handling
 - **Typo-tolerant classification** using RapidFuzz (1-2 typo tolerance)
 - **Dual embedding stores**: Text (E5-large-v2) + Images (OpenCLIP ViT-L/14)
@@ -11,6 +19,13 @@ A robust ingestion pipeline that loads geothermal literature taxonomy from Excel
 - **Idempotent processing** - skip already processed items
 - **CPU fallback** for all models
 - **Comprehensive logging** and progress tracking
+
+### 🌡️ **Semurup Geothermal Data**
+- **Reservoir Temperature**: 229-239°C (geothermometer analysis)
+- **Upflow Zone**: Dusun Baru (95.7°C) - Primary discharge
+- **Outflow Zone**: Mukai Pintu (39°C) - Diluted fluids
+- **Location**: Jambi Province, Indonesia (NOT West Java)
+- **Geochemical Analysis**: High Cl content, minimal fluid-rock interaction
 
 ## Installation
 
@@ -24,15 +39,25 @@ pip install -e .
 
 ## Usage
 
-### Basic Usage
+### 🎯 **QA System (Primary)**
 
 ```bash
-python -m src.ingest_literature
+# Start the API server
+python -m uvicorn src.api:app --host 127.0.0.1 --port 8000
+
+# Test with curl
+curl -X POST "http://127.0.0.1:8000/ask" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Dimana outflow zone di Semurup?", "field": "Semurup"}'
 ```
 
-### Advanced Usage
+### 📖 **Literature Ingestion**
 
 ```bash
+# Basic ingestion
+python -m src.ingest_literature
+
+# Advanced usage
 python -m src.ingest_literature \
     --corpus_dir "D:\Work\geo_ai_v3\knowledge" \
     --taxonomy_xlsx "D:\Work\geo_ai_v3\ingest_guide\Geothermal Taxonomy.xlsx" \
@@ -43,18 +68,12 @@ python -m src.ingest_literature \
     --log_level INFO
 ```
 
-### Command Line Options
+## API Endpoints
 
-- `--corpus_dir`: Directory containing PDF files (default: from config)
-- `--taxonomy_xlsx`: Path to taxonomy Excel file (default: from config)
-- `--max_pages`: Maximum pages per PDF (0 = all pages)
-- `--chunk_size`: Text chunk size in tokens (default: 500)
-- `--overlap`: Text chunk overlap in tokens (default: 80)
-- `--text/--no-text`: Enable/disable text processing
-- `--images/--no-images`: Enable/disable image processing
-- `--force_text`: Force re-processing of existing text chunks
-- `--force_image`: Force re-processing of existing images
-- `--log_level`: Logging level (DEBUG, INFO, WARNING, ERROR)
+- `POST /ask` - Main QA endpoint
+- `GET /fields` - List available geothermal fields
+- `GET /health` - Health check
+- `GET /stats` - System statistics
 
 ## Configuration
 
@@ -67,59 +86,41 @@ CORPUS_DIR = r"D:\Work\geo_ai_v3\knowledge"
 PERSIST_TEXT = r"D:\Work\geo_ai_v3\knowledge\text_emb"
 PERSIST_IMAGE = r"D:\Work\geo_ai_v3\knowledge\image_emb"
 IMAGES_OUT = r"D:\Work\geo_ai_v3\knowledge\images"
+
+# QA System Configuration
+QUESTION_MATRIX_PATH = r"D:\Work\geo_ai_v3\ingest_guide\Question Matrix.csv"
+CHROMA_TEXT_DIR = r"D:\Work\geo_ai_v3\knowledge\text_emb"
+CHROMA_IMAGE_DIR = r"D:\Work\geo_ai_v3\knowledge\image_emb"
 ```
-
-## Taxonomy Excel Format
-
-The pipeline expects an Excel file with these sheets:
-
-- **Aspects**: Geothermal aspects with keywords
-- **Geophysics_Methods**: Geophysical methods with keywords
-- **Geochemistry_Topics**: Geochemical topics with keywords
-- **Figure_Types**: Figure type classifications with keywords
-- **Synonyms_Map**: Synonym mappings (Indonesian/English)
-- **Intent_Tags**: Additional intent classifications
-
-Each sheet should have columns for names/types and associated keywords.
-
-## Output
-
-The pipeline creates:
-
-1. **Text embeddings** in `PERSIST_TEXT/text_emb` collection
-2. **Image embeddings** in `PERSIST_IMAGE/image_emb` collection
-3. **Extracted figures** saved in `IMAGES_OUT` directory
-
-### Metadata Structure
-
-Both text and image items include:
-- `doc_id`: Unique document identifier
-- `filename`: Original PDF filename
-- `page`: Page number
-- `discipline[]`: Classified disciplines
-- `aspect[]`: Classified aspects
-- `method[]`: Classified methods
-- `topic[]`: Classified topics (geochemistry)
-- `figure_type`: Figure classification (images only)
-- `keywords[]`: Matched keywords
-- `source_path`: Original file path
 
 ## Architecture
 
 ```
 src/
 ├── config.py              # Path constants and configuration
-├── ingest_literature.py   # CLI entry point
+├── api.py                 # FastAPI server
+├── app_graph.py           # LangGraph QA workflow
+├── ingest_literature.py   # CLI entry point for ingestion
+├── prompts/
+│   └── system_prompt.py   # LLM system prompts
 └── tools/
     ├── utils_io.py        # PDF processing and file utilities
     ├── taxonomy.py        # Excel taxonomy loader
     ├── classifier.py      # Typo-tolerant classification
     ├── rag.py            # Text embedding and Chroma store
-    └── vision.py         # Image embedding and Chroma store
+    ├── vision.py         # Image embedding and Chroma store
+    ├── qm.py             # Question Matrix loader
+    ├── rag_text.py       # Text RAG with fallback
+    ├── rag_image.py      # Image RAG with CLIP
+    ├── field_detect.py   # Field detection
+    └── semurup_data.py   # Direct Semurup data integration
 ```
 
 ## Dependencies
 
+- **fastapi**: API framework
+- **langchain-openai**: LLM integration
+- **langgraph**: Workflow orchestration
 - **chromadb**: Vector database
 - **sentence-transformers**: Text embeddings
 - **open_clip_torch**: Image embeddings
@@ -136,3 +137,4 @@ src/
 - Folder names (`Geology`, `Geophysics`, `Geochemistry`, `Geothermal`, `Spesific`) influence classification
 - Supports 1-2 typo tolerance with 80% fuzzy match threshold
 - Caption extraction attempts to find "Fig", "Figure", "Gambar", "Gbr" patterns
+- Direct Semurup data integration provides fallback for critical queries

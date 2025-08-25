@@ -11,8 +11,8 @@ from .config import (
     LLM_MODEL, LLM_TEMPERATURE, LLM_FREQUENCY_PENALTY, 
     LLM_MAX_TOKENS, TEXT_RETRIEVAL_TOP_K, get_qa_paths
 )
-from .tools.qm import get_question_matrix
-from .tools.field_detect import detect_field_from_question
+from .tools.qm import load_qm, infer_intent, filters_for_intent
+from .tools.field_detect import detect_field, get_available_fields
 from .tools.rag_text import get_text_rag
 from .tools.rag_image import get_image_rag
 from .prompts.system_prompt import (
@@ -97,7 +97,13 @@ class QAWorkflow:
             field = state.get("field")  # May be pre-provided
             
             if not field:
-                field, confidence = detect_field_from_question(question)
+                # Get available fields from Chroma
+                from .tools.rag_text import get_text_rag
+                text_rag = get_text_rag()
+                available_fields = get_available_fields(str(text_rag.chroma_dir))
+                
+                # Detect field using fuzzy matching
+                field, confidence = detect_field(question, available_fields)
                 logger.info(f"Field detection: '{field}' (confidence: {confidence})")
             else:
                 logger.info(f"Field pre-provided: '{field}'")
@@ -114,17 +120,18 @@ class QAWorkflow:
             question = state["question"]
             field = state.get("field")
             
-            # Get Question Matrix
-            qm = get_question_matrix()
+            # Load Question Matrix
+            qm_path = get_qa_paths()['question_matrix']
+            qm_rows = load_qm(str(qm_path))
             
             # Infer intent
-            intent, confidence = qm.infer_intent(question)
+            intent, confidence = infer_intent(question, qm_rows)
             logger.info(f"Intent inference: '{intent}' (confidence: {confidence:.3f})")
             
             # Build filters
             filters = {}
             if intent:
-                filters = qm.filters_for_intent(intent, field)
+                filters = filters_for_intent(intent, qm_rows, field)
             elif field:
                 filters = {"field": field}
                 
@@ -313,8 +320,21 @@ The western complex samples are preferred for temperature estimation because the
             image_ctx = state.get("image_ctx", [])
             numeric_ctx = state.get("numeric_ctx")  # Placeholder for digital twin
             intent = state.get("intent")
+            field = state.get("field")
             
             llm = self._get_llm()
+            
+            # Add seed facts if enabled and field matched
+            seed_facts = []
+            try:
+                from ..config import ENABLE_SEED_FACTS
+                if ENABLE_SEED_FACTS and field == 'Semurup':
+                    from .tools.seed_facts import get_field_facts
+                    seed_facts = get_field_facts(field)
+                    if seed_facts:
+                        logger.info(f"Added {len(seed_facts)} seed facts for field: {field}")
+            except Exception as e:
+                logger.warning(f"Error loading seed facts: {e}")
             
             # Check if we have any evidence (including synthetic Semurup data)
             if not text_ctx and not image_ctx and not numeric_ctx:
@@ -362,6 +382,12 @@ The western complex samples are preferred for temperature estimation because the
             else:
                 # Build user prompt with evidence
                 user_prompt = build_user_prompt(question, text_ctx, image_ctx, numeric_ctx)
+                
+                # Add seed facts to evidence if available
+                if seed_facts:
+                    user_prompt += "\n\n## Seed Facts (Field-specific knowledge):\n"
+                    user_prompt += "\n".join(seed_facts)
+                    user_prompt += "\n\nUse these seed facts as additional evidence when relevant to the question."
                 
             # Get system prompt
             system_prompt = get_system_prompt()

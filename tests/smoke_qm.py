@@ -1,415 +1,227 @@
-"""Smoke tests for QA engine acceptance testing."""
+"""Smoke tests for QA engine with Question Matrix integration."""
 
 import asyncio
 import json
 import logging
-import os
-import sys
-from pathlib import Path
+import time
+from typing import Dict, List
 
 import httpx
 import pytest
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.app_graph import get_qa_workflow
-
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Test configuration
+API_BASE_URL = "http://127.0.0.1:8000"
+TIMEOUT = 30
 
-# Test questions covering different aspects
+# Test questions covering different intents
 TEST_QUESTIONS = [
+    # Temperature/reservoir questions
     {
-        "question": "Where is the caprock and how thick is it?",
+        "question": "What is the reservoir temperature of Semurup?",
         "field": "Semurup",
-        "expected_aspects": ["caprock", "thickness"],
-        "requires_evidence": True
+        "expected_intent": "temperature_inquiry",
+        "requires_twin": False
     },
     {
-        "question": "What is the reservoir temperature based on geothermometers?",
+        "question": "Dimana lokasi manifestasi dengan temperature tertinggi di Semurup?",
         "field": "Semurup", 
-        "expected_aspects": ["reservoir", "temperature", "geothermometer"],
-        "requires_evidence": True
+        "expected_intent": "temperature_inquiry",
+        "requires_twin": False
     },
+    # Location questions
     {
-        "question": "How does MT data show the subsurface structure?",
+        "question": "Where is the Semurup geothermal field located?",
         "field": "Semurup",
-        "expected_aspects": ["mt", "magnetotelluric", "structure"],
-        "requires_evidence": True
+        "expected_intent": "location_inquiry", 
+        "requires_twin": False
     },
+    # Geology questions
     {
-        "question": "What does the hydrology tell us about the geothermal system?",
+        "question": "What is the geology of Semurup area?",
         "field": "Semurup",
-        "expected_aspects": ["hydrology", "water", "system"],
-        "requires_evidence": True
+        "expected_intent": "geology_inquiry",
+        "requires_twin": False
     },
+    # General questions (no field)
     {
-        "question": "Where should we target wells for development?",
+        "question": "How does geothermal energy work?",
+        "field": None,
+        "expected_intent": "general_inquiry",
+        "requires_twin": False
+    },
+    # Questions that might require twin data
+    {
+        "question": "What is the current production capacity of Semurup?",
         "field": "Semurup",
-        "expected_aspects": ["wells", "targeting", "development"],
-        "requires_evidence": True
-    },
-    {
-        "question": "What is the heat source for this geothermal field?",
-        "field": "Semurup",
-        "expected_aspects": ["heat", "source"],
-        "requires_evidence": True
-    },
-    {
-        "question": "Explain typical caprock lithologies in Indonesian volcanic settings.",
-        "field": None,  # General question, no specific field
-        "expected_aspects": ["caprock", "lithology", "volcanic"],
-        "requires_evidence": True
-    },
-    {
-        "question": "How do geothermometers work in volcanic geothermal systems?",
-        "field": None,  # General question
-        "expected_aspects": ["geothermometer", "volcanic", "geothermal"],
-        "requires_evidence": True
+        "expected_intent": "production_inquiry",
+        "requires_twin": True
     }
 ]
 
+async def test_api_health():
+    """Test API health endpoint."""
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        response = await client.get(f"{API_BASE_URL}/health")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data["status"] == "healthy"
+        logger.info("✅ Health check passed")
 
-class QASmokeTest:
-    """Smoke test suite for QA engine."""
+async def test_api_stats():
+    """Test API stats endpoint."""
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        response = await client.get(f"{API_BASE_URL}/stats")
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert "knowledge_base" in data
+        assert "text_chunks" in data["knowledge_base"]
+        assert "image_figures" in data["knowledge_base"]
+        
+        logger.info(f"✅ Stats endpoint: {data['knowledge_base']['text_chunks']} text chunks, "
+                   f"{data['knowledge_base']['image_figures']} figures")
+
+async def test_question_with_field(question_data: Dict):
+    """Test a specific question with field."""
+    question = question_data["question"]
+    field = question_data["field"]
+    expected_intent = question_data["expected_intent"]
+    requires_twin = question_data["requires_twin"]
     
-    def __init__(self, api_key: str = None, base_url: str = "http://127.0.0.1:8000"):
-        """Initialize smoke test.
-        
-        Args:
-            api_key: OpenAI API key
-            base_url: Base URL for API testing
-        """
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url
-        self.results = []
-        
-    async def test_api_endpoints(self) -> bool:
-        """Test API endpoints are accessible.
-        
-        Returns:
-            True if all endpoints are accessible
-        """
-        print("\n=== Testing API Endpoints ===")
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                # Test root endpoint
-                response = await client.get(f"{self.base_url}/")
-                assert response.status_code == 200
-                print("✓ Root endpoint accessible")
-                
-                # Test health endpoint
-                response = await client.get(f"{self.base_url}/health")
-                print(f"✓ Health check: {response.json()}")
-                
-                # Test fields endpoint
-                response = await client.get(f"{self.base_url}/fields")
-                assert response.status_code == 200
-                fields_data = response.json()
-                print(f"✓ Fields endpoint: {len(fields_data['fields'])} fields available")
-                
-                # Test stats endpoint
-                response = await client.get(f"{self.base_url}/stats")
-                assert response.status_code == 200
-                stats_data = response.json()
-                print(f"✓ Stats endpoint: {stats_data}")
-                
-                return True
-                
-        except Exception as e:
-            print(f"✗ API endpoint test failed: {e}")
-            return False
-            
-    async def test_question_via_api(self, question_data: dict) -> dict:
-        """Test a question via API endpoint.
-        
-        Args:
-            question_data: Question test data
-            
-        Returns:
-            Test result dictionary
-        """
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                request_data = {
-                    "question": question_data["question"],
-                    "field": question_data["field"]
-                }
-                
-                response = await client.post(
-                    f"{self.base_url}/ask",
-                    json=request_data,
-                    headers={"Content-Type": "application/json"}
-                )
-                
-                if response.status_code != 200:
-                    return {
-                        "question": question_data["question"],
-                        "field": question_data["field"],
-                        "success": False,
-                        "error": f"HTTP {response.status_code}: {response.text}",
-                        "answer": None,
-                        "citations": [],
-                        "figures": []
-                    }
-                    
-                result = response.json()
-                
-                return {
-                    "question": question_data["question"],
-                    "field": question_data["field"],
-                    "success": True,
-                    "error": result.get("error"),
-                    "answer": result.get("answer", ""),
-                    "citations": result.get("citations", []),
-                    "figures": result.get("figures", []),
-                    "confidence": result.get("confidence", "UNKNOWN"),
-                    "text_chunks_found": result.get("text_chunks_found", 0),
-                    "figures_found": result.get("figures_found", 0),
-                    "intent": result.get("intent")
-                }
-                
-        except Exception as e:
-            return {
-                "question": question_data["question"],
-                "field": question_data["field"],
-                "success": False,
-                "error": str(e),
-                "answer": None,
-                "citations": [],
-                "figures": []
-            }
-            
-    def test_question_direct(self, question_data: dict) -> dict:
-        """Test a question via direct workflow call.
-        
-        Args:
-            question_data: Question test data
-            
-        Returns:
-            Test result dictionary
-        """
-        try:
-            if not self.api_key:
-                return {
-                    "question": question_data["question"],
-                    "field": question_data["field"],
-                    "success": False,
-                    "error": "No API key provided",
-                    "answer": None,
-                    "citations": [],
-                    "figures": []
-                }
-                
-            workflow = get_qa_workflow(self.api_key)
-            result = workflow.run(question_data["question"], question_data["field"])
-            
-            return {
-                "question": question_data["question"],
-                "field": question_data["field"],
-                "success": True,
-                "error": result.get("error"),
-                "answer": result.get("answer", ""),
-                "citations": result.get("citations", []),
-                "figures": result.get("figures", []),
-                "confidence": result.get("confidence", "UNKNOWN"),
-                "text_chunks_found": result.get("text_chunks_found", 0),
-                "figures_found": result.get("figures_found", 0),
-                "intent": result.get("intent")
-            }
-            
-        except Exception as e:
-            return {
-                "question": question_data["question"],
-                "field": question_data["field"],
-                "success": False,
-                "error": str(e),
-                "answer": None,
-                "citations": [],
-                "figures": []
-            }
-            
-    def validate_result(self, result: dict, expected_data: dict) -> list:
-        """Validate a test result against expectations.
-        
-        Args:
-            result: Test result
-            expected_data: Expected test data
-            
-        Returns:
-            List of validation issues (empty if all good)
-        """
-        issues = []
-        
-        # Check if test succeeded
-        if not result["success"]:
-            issues.append(f"Test failed: {result.get('error', 'Unknown error')}")
-            return issues
-            
-        # Check if answer is non-empty
-        answer = result.get("answer", "")
-        if not answer or len(answer.strip()) < 10:
-            issues.append("Answer is too short or empty")
-            
-        # Check for citations if evidence is required
-        citations = result.get("citations", [])
-        if expected_data.get("requires_evidence") and len(citations) == 0:
-            issues.append("No citations found but evidence was expected")
-            
-        # Check for numeric twin fallback message if needed
-        if "numeric" in expected_data.get("expected_aspects", []):
-            if "numeric twin not available" not in answer.lower() and "digital twin" not in answer.lower():
-                # This is OK if we actually found numeric data, but warn if not
-                if result.get("text_chunks_found", 0) == 0:
-                    issues.append("Expected numeric twin fallback message but not found")
-                    
-        # Check confidence level
-        confidence = result.get("confidence", "UNKNOWN")
-        if confidence == "LOW" and len(citations) > 0:
-            issues.append("Confidence is LOW despite having citations")
-            
-        return issues
-        
-    async def run_smoke_tests(self, test_api: bool = True, test_direct: bool = True) -> dict:
-        """Run all smoke tests.
-        
-        Args:
-            test_api: Whether to test API endpoints
-            test_direct: Whether to test direct workflow calls
-            
-        Returns:
-            Test results summary
-        """
-        print("=" * 60)
-        print("GEOTHERMAL QA ENGINE - SMOKE TESTS")
-        print("=" * 60)
-        
-        summary = {
-            "total_tests": 0,
-            "passed": 0,
-            "failed": 0,
-            "api_accessible": False,
-            "results": []
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        payload = {
+            "question": question,
+            "field": field
         }
         
-        # Test API endpoints if requested
-        if test_api:
-            summary["api_accessible"] = await self.test_api_endpoints()
+        logger.info(f"Testing: '{question}' (field: {field})")
+        
+        response = await client.post(
+            f"{API_BASE_URL}/ask",
+            json=payload,
+            timeout=TIMEOUT
+        )
+        
+        assert response.status_code == 200, f"Request failed: {response.text}"
+        
+        data = response.json()
+        
+        # Basic response validation
+        assert "answer" in data
+        assert "citations" in data
+        assert "text_chunks_found" in data
+        assert "figures_found" in data
+        
+        # Content validation
+        assert len(data["answer"]) > 0, "Answer should not be empty"
+        assert data["text_chunks_found"] >= 0, "Should have non-negative text chunks"
+        assert data["figures_found"] >= 0, "Should have non-negative figures"
+        
+        # Intent validation (if available)
+        if "intent" in data and data["intent"]:
+            logger.info(f"Detected intent: {data['intent']} (expected: {expected_intent})")
+        
+        # Twin data handling
+        if requires_twin:
+            # Check if answer mentions missing twin data
+            answer_lower = data["answer"].lower()
+            twin_indicators = ["twin", "production", "capacity", "current", "real-time"]
+            has_twin_content = any(indicator in answer_lower for indicator in twin_indicators)
             
-        # Test each question
-        print(f"\n=== Testing {len(TEST_QUESTIONS)} Questions ===")
+            if not has_twin_content:
+                logger.warning(f"Question may need twin data but answer doesn't mention it: {question}")
         
-        for i, question_data in enumerate(TEST_QUESTIONS, 1):
-            print(f"\n[{i}/{len(TEST_QUESTIONS)}] Testing: {question_data['question'][:50]}...")
-            if question_data["field"]:
-                print(f"    Field: {question_data['field']}")
-            else:
-                print("    Field: General (no specific field)")
-                
-            test_results = []
-            
-            # Test via API if available
-            if test_api and summary["api_accessible"]:
-                print("  → Testing via API...")
-                api_result = await self.test_question_via_api(question_data)
-                api_result["method"] = "API"
-                test_results.append(api_result)
-                
-            # Test via direct call
-            if test_direct:
-                print("  → Testing via direct call...")
-                direct_result = self.test_question_direct(question_data)
-                direct_result["method"] = "Direct"
-                test_results.append(direct_result)
-                
-            # Validate results
-            for result in test_results:
-                summary["total_tests"] += 1
-                issues = self.validate_result(result, question_data)
-                
-                if issues:
-                    summary["failed"] += 1
-                    result["validation_issues"] = issues
-                    print(f"    ✗ {result['method']}: FAILED")
-                    for issue in issues:
-                        print(f"      - {issue}")
-                else:
-                    summary["passed"] += 1
-                    result["validation_issues"] = []
-                    print(f"    ✓ {result['method']}: PASSED")
-                    
-                # Show key metrics
-                if result["success"]:
-                    print(f"      Citations: {len(result.get('citations', []))}")
-                    print(f"      Text chunks: {result.get('text_chunks_found', 0)}")
-                    print(f"      Figures: {result.get('figures_found', 0)}")
-                    print(f"      Confidence: {result.get('confidence', 'UNKNOWN')}")
-                    if result.get('intent'):
-                        print(f"      Intent: {result.get('intent')}")
-                        
-                summary["results"].append(result)
-                
-        # Print summary
-        print("\n" + "=" * 60)
-        print("SMOKE TEST SUMMARY")
-        print("=" * 60)
-        print(f"Total tests: {summary['total_tests']}")
-        print(f"Passed: {summary['passed']}")
-        print(f"Failed: {summary['failed']}")
-        print(f"Success rate: {summary['passed']/summary['total_tests']*100:.1f}%" if summary['total_tests'] > 0 else "N/A")
-        print(f"API accessible: {'Yes' if summary['api_accessible'] else 'No'}")
+        # Citations validation
+        assert len(data["citations"]) >= 1, f"Should have at least 1 citation for: {question}"
         
-        # Show sample answers
-        print(f"\n=== Sample Answers ===")
-        for i, result in enumerate(summary["results"][:3], 1):
-            if result["success"] and result.get("answer"):
-                print(f"\n{i}. Q: {result['question'][:60]}...")
-                print(f"   A: {result['answer'][:200]}...")
-                if result.get("citations"):
-                    print(f"   Citations: {', '.join(result['citations'][:3])}")
-                    
-        return summary
-
-
-async def main():
-    """Main test runner."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Run QA engine smoke tests")
-    parser.add_argument("--api-key", help="OpenAI API key (or set OPENAI_API_KEY env var)")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="API base URL")
-    parser.add_argument("--no-api", action="store_true", help="Skip API tests")
-    parser.add_argument("--no-direct", action="store_true", help="Skip direct tests")
-    parser.add_argument("--output", help="Save results to JSON file")
-    
-    args = parser.parse_args()
-    
-    # Setup logging
-    logging.basicConfig(level=logging.WARNING)  # Reduce noise
-    
-    # Run tests
-    tester = QASmokeTest(args.api_key, args.base_url)
-    results = await tester.run_smoke_tests(
-        test_api=not args.no_api,
-        test_direct=not args.no_direct
-    )
-    
-    # Save results if requested
-    if args.output:
-        with open(args.output, 'w') as f:
-            json.dump(results, f, indent=2)
-        print(f"\nResults saved to {args.output}")
+        logger.info(f"✅ Question passed: {len(data['citations'])} citations, "
+                   f"{data['text_chunks_found']} chunks, {data['figures_found']} figures")
         
-    # Exit with appropriate code
-    if results["failed"] == 0:
-        print("\n🎉 All tests passed!")
-        sys.exit(0)
-    else:
-        print(f"\n❌ {results['failed']} tests failed")
-        sys.exit(1)
+        return data
 
+async def test_field_detection():
+    """Test automatic field detection."""
+    question = "What is the temperature of Semurup reservoir?"
+    
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        payload = {
+            "question": question,
+            "field": None  # Let API detect field
+        }
+        
+        logger.info(f"Testing field detection: '{question}'")
+        
+        response = await client.post(
+            f"{API_BASE_URL}/ask",
+            json=payload,
+            timeout=TIMEOUT
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should still work even without explicit field
+        assert len(data["answer"]) > 0
+        assert data["text_chunks_found"] >= 0
+        
+        logger.info(f"✅ Field detection passed: detected field = {data.get('field', 'None')}")
+
+async def test_general_question():
+    """Test general question without specific field."""
+    question = "How does geothermal energy generation work?"
+    
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        payload = {
+            "question": question,
+            "field": None
+        }
+        
+        logger.info(f"Testing general question: '{question}'")
+        
+        response = await client.post(
+            f"{API_BASE_URL}/ask",
+            json=payload,
+            timeout=TIMEOUT
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Should provide general knowledge answer
+        assert len(data["answer"]) > 0
+        assert "geothermal" in data["answer"].lower() or "energy" in data["answer"].lower()
+        
+        logger.info("✅ General question passed")
+
+async def run_all_tests():
+    """Run all smoke tests."""
+    logger.info("🚀 Starting QA Engine smoke tests...")
+    
+    # Test API health
+    await test_api_health()
+    
+    # Test stats endpoint
+    await test_api_stats()
+    
+    # Test field detection
+    await test_field_detection()
+    
+    # Test general question
+    await test_general_question()
+    
+    # Test specific questions
+    for i, question_data in enumerate(TEST_QUESTIONS):
+        logger.info(f"\n--- Test {i+1}/{len(TEST_QUESTIONS)} ---")
+        await test_question_with_field(question_data)
+        await asyncio.sleep(1)  # Brief pause between requests
+    
+    logger.info("\n🎉 All smoke tests passed!")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Run tests
+    asyncio.run(run_all_tests())

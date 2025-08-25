@@ -15,6 +15,8 @@ QUESTION_MATRIX_PATH = r"D:\Work\geo_ai_v3\ingest_guide\Question Matrix.csv"
 CHROMA_TEXT_DIR = r"D:\Work\geo_ai_v3\knowledge\text_emb"
 CHROMA_IMAGE_DIR = r"D:\Work\geo_ai_v3\knowledge\image_emb"
 IMAGES_BASE_DIR = r"D:\Work\geo_ai_v3\knowledge\images"
+FACTS_DIR = r"D:\Work\geo_ai_v3\data"
+STAMP_PATH = r"D:\Work\geo_ai_v3\knowledge\last_ingest.stamp"
 
 # Convert to Path objects for cross-platform compatibility
 TAXONOMY_XLSX_PATH = Path(TAXONOMY_XLSX)
@@ -28,6 +30,8 @@ QUESTION_MATRIX_PATH_OBJ = Path(QUESTION_MATRIX_PATH)
 CHROMA_TEXT_DIR_OBJ = Path(CHROMA_TEXT_DIR)
 CHROMA_IMAGE_DIR_OBJ = Path(CHROMA_IMAGE_DIR)
 IMAGES_BASE_DIR_OBJ = Path(IMAGES_BASE_DIR)
+FACTS_DIR_OBJ = Path(FACTS_DIR)
+STAMP_PATH_OBJ = Path(STAMP_PATH)
 
 # Environment variable overrides for QA paths
 def get_qa_paths():
@@ -66,6 +70,12 @@ QM_INTENT_CONFIDENCE_THRESHOLD = 0.7
 FIELD_DETECTION_SCORE_CUTOFF = 85
 TEXT_RETRIEVAL_TOP_K = 12
 IMAGE_RETRIEVAL_TOP_K = 6
+
+# Feature flags (new, default OFF for backward compatibility)
+ENABLE_PROGRESSIVE_RELAX = False
+ENABLE_CAPTION_FIRST = False
+ENABLE_SEED_FACTS = False
+STRUCTURED_LOGS = False
 
 # Chunking parameters
 DEFAULT_CHUNK_SIZE = 500

@@ -320,8 +320,21 @@ The western complex samples are preferred for temperature estimation because the
             image_ctx = state.get("image_ctx", [])
             numeric_ctx = state.get("numeric_ctx")  # Placeholder for digital twin
             intent = state.get("intent")
+            field = state.get("field")
             
             llm = self._get_llm()
+            
+            # Add seed facts if enabled and field matched
+            seed_facts = []
+            try:
+                from ..config import ENABLE_SEED_FACTS
+                if ENABLE_SEED_FACTS and field == 'Semurup':
+                    from .tools.seed_facts import get_field_facts
+                    seed_facts = get_field_facts(field)
+                    if seed_facts:
+                        logger.info(f"Added {len(seed_facts)} seed facts for field: {field}")
+            except Exception as e:
+                logger.warning(f"Error loading seed facts: {e}")
             
             # Check if we have any evidence (including synthetic Semurup data)
             if not text_ctx and not image_ctx and not numeric_ctx:
@@ -369,6 +382,12 @@ The western complex samples are preferred for temperature estimation because the
             else:
                 # Build user prompt with evidence
                 user_prompt = build_user_prompt(question, text_ctx, image_ctx, numeric_ctx)
+                
+                # Add seed facts to evidence if available
+                if seed_facts:
+                    user_prompt += "\n\n## Seed Facts (Field-specific knowledge):\n"
+                    user_prompt += "\n".join(seed_facts)
+                    user_prompt += "\n\nUse these seed facts as additional evidence when relevant to the question."
                 
             # Get system prompt
             system_prompt = get_system_prompt()

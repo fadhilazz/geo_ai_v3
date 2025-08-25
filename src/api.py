@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from .app_graph import get_qa_workflow
-from .tools.field_detect import get_field_detector
+from .tools.field_detect import get_available_fields
 
 try:
     from .config import STRUCTURED_LOGS, STAMP_PATH_OBJ, FACTS_DIR_OBJ
@@ -115,8 +115,14 @@ async def ask_question(request: QuestionRequest, api_key: str = Depends(get_api_
         # If no field provided, try to detect it
         field = request.field
         if not field:
-            field_detector = get_field_detector()
-            detected_field, confidence = field_detector.detect_field(request.question)
+            # Get available fields from Chroma
+            from .tools.rag_text import get_text_rag
+            text_rag = get_text_rag()
+            available_fields = get_available_fields(str(text_rag.chroma_dir))
+            
+            # Detect field using fuzzy matching
+            from .tools.field_detect import detect_field
+            detected_field, confidence = detect_field(request.question, available_fields)
             if detected_field and confidence >= 85:  # High confidence threshold
                 field = detected_field
                 logger.info(f"Auto-detected field: '{field}' (confidence: {confidence})")
@@ -178,8 +184,9 @@ async def get_fields():
         List of available field names
     """
     try:
-        field_detector = get_field_detector()
-        fields = field_detector.get_known_fields()
+        from .tools.rag_text import get_text_rag
+        text_rag = get_text_rag()
+        fields = list(get_available_fields(str(text_rag.chroma_dir)))
         
         logger.info(f"Retrieved {len(fields)} available fields")
         return FieldsResponse(fields=fields)
@@ -201,8 +208,9 @@ async def health_check():
         
         # Try to load field detector (tests database connections)
         try:
-            field_detector = get_field_detector()
-            field_count = len(field_detector.get_known_fields())
+            from .tools.rag_text import get_text_rag
+            text_rag = get_text_rag()
+            field_count = len(get_available_fields(str(text_rag.chroma_dir)))
             checks["database"] = f"ok ({field_count} fields)"
         except Exception as e:
             checks["database"] = f"error: {e}"

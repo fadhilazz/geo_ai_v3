@@ -57,18 +57,25 @@ def by_intent(rows: pd.DataFrame) -> Dict[str, List[Dict]]:
     Returns:
         Dictionary mapping intent to list of row data
     """
-    if 'intent' not in rows.columns:
-        logger.warning("No 'intent' column found in Question Matrix")
+    # Check for different possible intent column names
+    intent_column = None
+    for col in ['intent', 'intent_tag']:
+        if col in rows.columns:
+            intent_column = col
+            break
+    
+    if not intent_column:
+        logger.warning("No 'intent' or 'intent_tag' column found in Question Matrix")
         return {}
     
     intent_groups = {}
     for _, row in rows.iterrows():
-        intent = row.get('intent', 'unknown')
+        intent = row.get(intent_column, 'unknown')
         if intent not in intent_groups:
             intent_groups[intent] = []
         intent_groups[intent].append(row.to_dict())
     
-    logger.info(f"Grouped Question Matrix by {len(intent_groups)} intents")
+    logger.info(f"Grouped Question Matrix by {len(intent_groups)} intents using column '{intent_column}'")
     return intent_groups
 
 def infer_intent(question: str, rows: pd.DataFrame) -> Tuple[str, float]:
@@ -84,16 +91,29 @@ def infer_intent(question: str, rows: pd.DataFrame) -> Tuple[str, float]:
     if rows.empty:
         return "unknown", 0.0
     
+    # Find intent column name
+    intent_column = None
+    for col in ['intent', 'intent_tag']:
+        if col in rows.columns:
+            intent_column = col
+            break
+    
+    if not intent_column:
+        return "unknown", 0.0
+    
     # Extract exemplar questions and keywords
     exemplars = []
     keywords = []
     
     for _, row in rows.iterrows():
-        if 'exemplar_question' in row and pd.notna(row['exemplar_question']):
-            exemplars.append(row['exemplar_question'])
+        # Check for exemplar question in different possible columns
+        for col in ['exemplar_question', 'user_question']:
+            if col in row and pd.notna(row[col]):
+                exemplars.append(row[col])
+                break
         
         # Collect keywords from various columns
-        keyword_cols = ['keywords', 'retrieval_hint', 'question_pattern']
+        keyword_cols = ['keywords', 'retrieval_hint', 'question_pattern', 'eval_keywords']
         for col in keyword_cols:
             if col in row and pd.notna(row[col]):
                 keywords.extend(str(row[col]).split(','))
@@ -113,24 +133,32 @@ def infer_intent(question: str, rows: pd.DataFrame) -> Tuple[str, float]:
             best_score = similarities[best_idx]
             
             # Find corresponding intent
-            exemplar_questions = [row.get('exemplar_question', '') for _, row in rows.iterrows() if pd.notna(row.get('exemplar_question'))]
+            exemplar_questions = []
+            for _, row in rows.iterrows():
+                for col in ['exemplar_question', 'user_question']:
+                    if col in row and pd.notna(row[col]):
+                        exemplar_questions.append(row[col])
+                        break
+            
             if exemplar_questions and best_idx < len(exemplar_questions):
-                matching_rows = rows[rows['exemplar_question'] == exemplar_questions[best_idx]]
-                if not matching_rows.empty:
-                    intent = matching_rows.iloc[0].get('intent', 'unknown')
-                    return intent, float(best_score)
+                # Find matching row
+                for _, row in rows.iterrows():
+                    for col in ['exemplar_question', 'user_question']:
+                        if col in row and pd.notna(row[col]) and row[col] == exemplar_questions[best_idx]:
+                            intent = row.get(intent_column, 'unknown')
+                            return intent, float(best_score)
         
         # Fallback: keyword matching
         question_lower = question.lower()
         keyword_scores = {}
         
         for _, row in rows.iterrows():
-            intent = row.get('intent', 'unknown')
+            intent = row.get(intent_column, 'unknown')
             if intent not in keyword_scores:
                 keyword_scores[intent] = 0
             
             # Check keywords
-            for col in ['keywords', 'retrieval_hint', 'question_pattern']:
+            for col in ['keywords', 'retrieval_hint', 'question_pattern', 'eval_keywords']:
                 if col in row and pd.notna(row[col]):
                     row_keywords = str(row[col]).lower().split(',')
                     for keyword in row_keywords:
@@ -161,8 +189,18 @@ def filters_for_intent(intent: str, rows: pd.DataFrame, field: Optional[str] = N
     """
     filters = {}
     
+    # Find intent column name
+    intent_column = None
+    for col in ['intent', 'intent_tag']:
+        if col in rows.columns:
+            intent_column = col
+            break
+    
+    if not intent_column:
+        return filters
+    
     # Find rows matching intent
-    intent_rows = rows[rows['intent'] == intent]
+    intent_rows = rows[rows[intent_column] == intent]
     
     if not intent_rows.empty:
         row = intent_rows.iloc[0]

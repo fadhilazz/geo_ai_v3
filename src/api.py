@@ -14,6 +14,8 @@ import uvicorn
 
 from .app_graph import get_qa_workflow
 from .tools.field_detect import get_available_fields, detect_field
+from .twin.adapter import twin_summary, twin_query
+from .twin.registry import list_available_fields as list_twin_fields
 
 try:
     from .config import STRUCTURED_LOGS, STAMP_PATH_OBJ, FACTS_DIR_OBJ
@@ -68,6 +70,30 @@ class FieldsResponse(BaseModel):
     fields: List[str]
 
 
+class TwinSummaryResponse(BaseModel):
+    """Response model for twin summary."""
+    field: str
+    summary: Dict
+    error: Optional[str] = None
+
+
+class TwinQueryRequest(BaseModel):
+    """Request model for twin queries."""
+    field: str
+    intent_tag: str
+    params: Optional[Dict] = None
+
+
+class TwinQueryResponse(BaseModel):
+    """Response model for twin queries."""
+    field: str
+    intent_tag: str
+    metrics: Dict
+    execution_time_ms: float
+    cache_hit: bool = False
+    error: Optional[str] = None
+
+
 def get_api_key():
     """Get OpenAI API key from environment."""
     api_key = os.getenv("OPENAI_API_KEY")
@@ -88,7 +114,10 @@ async def root():
         "docs": "/docs",
         "endpoints": {
             "ask": "POST /ask - Ask a question",
-            "fields": "GET /fields - Get available fields"
+            "fields": "GET /fields - Get available fields",
+            "twin_summary": "GET /twin/summary?field=<field> - Get twin summary",
+            "twin_query": "POST /twin/query - Execute twin query",
+            "twin_fields": "GET /twin/fields - Get available twin fields"
         }
     }
 
@@ -234,6 +263,61 @@ async def health_check():
             "status": "unhealthy",
             "error": str(e)
         }
+
+
+@app.get("/twin/summary", response_model=TwinSummaryResponse)
+async def get_twin_summary(field: str):
+    """Get twin summary for a field."""
+    try:
+        summary = twin_summary(field)
+        if "error" in summary:
+            return TwinSummaryResponse(field=field, error=summary["error"])
+        return TwinSummaryResponse(field=field, summary=summary)
+    except Exception as e:
+        logger.error(f"Error getting twin summary for {field}: {e}")
+        return TwinSummaryResponse(field=field, error=f"Error getting twin summary: {str(e)}")
+
+
+@app.post("/twin/query", response_model=TwinQueryResponse)
+async def execute_twin_query(request: TwinQueryRequest):
+    """Execute a twin query."""
+    try:
+        result = twin_query(request.field, request.intent_tag, "", request.params)
+        if "error" in result:
+            return TwinQueryResponse(
+                field=request.field,
+                intent_tag=request.intent_tag,
+                metrics={},
+                execution_time_ms=0,
+                error=result["error"]
+            )
+        return TwinQueryResponse(
+            field=result["field"],
+            intent_tag=result["intent_tag"],
+            metrics=result["metrics"],
+            execution_time_ms=result["execution_time_ms"],
+            cache_hit=result.get("cache_hit", False)
+        )
+    except Exception as e:
+        logger.error(f"Error executing twin query: {e}")
+        return TwinQueryResponse(
+            field=request.field,
+            intent_tag=request.intent_tag,
+            metrics={},
+            execution_time_ms=0,
+            error=f"Error executing twin query: {str(e)}"
+        )
+
+
+@app.get("/twin/fields", response_model=FieldsResponse)
+async def get_twin_fields():
+    """Get available twin fields."""
+    try:
+        fields = list_twin_fields()
+        return FieldsResponse(fields=fields)
+    except Exception as e:
+        logger.error(f"Error getting twin fields: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting twin fields: {e}")
 
 
 @app.get("/stats")

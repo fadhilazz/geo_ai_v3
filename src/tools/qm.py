@@ -45,7 +45,7 @@ def load_qm(path: str) -> List[Dict]:
         raise ValueError(f"QM missing columns: {missing}")
     
     # unify types
-    df["requires_twin"] = df["requires_twin"].astype(str).str.upper().str.contains("YES")
+    df["requires_twin"] = df["requires_twin"].astype(str).str.upper().str.contains("YES|TRUE")
     
     logger.info(f"Loaded Question Matrix with {len(df)} rows and columns: {list(df.columns)}")
     return df[QM_COLS].to_dict(orient="records")

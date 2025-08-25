@@ -137,10 +137,78 @@ class QAWorkflow:
                 
             logger.info(f"Generated filters: {filters}")
             
+            # Check if twin data is required
+            numeric_ctx = None
+            if intent and field:
+                # Find intent info in QM
+                intent_info = None
+                for row in qm_rows:
+                    if row.get('intent_tag') == intent:
+                        intent_info = row
+                        break
+                
+                if intent_info and intent_info.get('requires_twin'):
+                    logger.info(f"Twin data required for intent: {intent}")
+                    try:
+                        from .twin.adapter import twin_summary, twin_query, clarify_needed, should_use_twin_summary
+                        
+                        # Check if we should use summary or live query
+                        if should_use_twin_summary(question, intent):
+                            # Use twin summary for general questions
+                            twin_data = twin_summary(field)
+                            if "error" not in twin_data:
+                                numeric_ctx = {
+                                    "type": "twin_summary",
+                                    "field": field,
+                                    "intent": intent,
+                                    "data": twin_data
+                                }
+                                logger.info(f"Added twin summary context for {field}")
+                        else:
+                            # Use live twin query for specific numeric questions
+                            # Extract parameters from question or use defaults
+                            params = {}
+                            if "resistivity" in question.lower():
+                                if "<" in question:
+                                    # Extract threshold like "resistivity < 10"
+                                    import re
+                                    match = re.search(r'< (\d+(?:\.\d+)?)', question)
+                                    if match:
+                                        params["res_threshold"] = float(match.group(1))
+                            
+                            twin_data = twin_query(field, intent, question, params)
+                            if "error" not in twin_data:
+                                numeric_ctx = {
+                                    "type": "twin_query",
+                                    "field": field,
+                                    "intent": intent,
+                                    "data": twin_data["metrics"],
+                                    "execution_time_ms": twin_data["execution_time_ms"]
+                                }
+                                logger.info(f"Added twin query context for {field}")
+                            else:
+                                logger.warning(f"Twin query failed: {twin_data['error']}")
+                        
+                        # Check if clarification is needed
+                        clarification = clarify_needed(question, intent)
+                        if clarification:
+                            logger.info(f"Clarification needed: {clarification}")
+                            return {
+                                "intent": intent,
+                                "intent_confidence": confidence,
+                                "filters": filters,
+                                "numeric_ctx": None,
+                                "clarification_needed": clarification
+                            }
+                            
+                    except Exception as e:
+                        logger.error(f"Error getting twin data: {e}")
+            
             return {
                 "intent": intent,
                 "intent_confidence": confidence,
-                "filters": filters
+                "filters": filters,
+                "numeric_ctx": numeric_ctx
             }
             
         except Exception as e:
@@ -149,6 +217,7 @@ class QAWorkflow:
                 "intent": None,
                 "intent_confidence": 0.0,
                 "filters": {},
+                "numeric_ctx": None,
                 "error": f"QM routing error: {e}"
             }
             

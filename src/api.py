@@ -2,7 +2,10 @@
 
 import logging
 import os
+import json
+import time
 from typing import Dict, List, Optional
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +14,11 @@ import uvicorn
 
 from .app_graph import get_qa_workflow
 from .tools.field_detect import get_field_detector
+
+try:
+    from .config import STRUCTURED_LOGS, STAMP_PATH_OBJ, FACTS_DIR_OBJ
+except ImportError:
+    from src.config import STRUCTURED_LOGS, STAMP_PATH_OBJ, FACTS_DIR_OBJ
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +104,8 @@ async def ask_question(request: QuestionRequest, api_key: str = Depends(get_api_
     Returns:
         Question response with answer and metadata
     """
+    start_time = time.time()
+    
     try:
         logger.info(f"Received question: '{request.question}' (field: {request.field})")
         
@@ -116,13 +126,46 @@ async def ask_question(request: QuestionRequest, api_key: str = Depends(get_api_
         # Run the workflow
         result = workflow.run(request.question, field)
         
+        # Calculate latency
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        # Structured logging if enabled
+        if STRUCTURED_LOGS:
+            log_data = {
+                "timestamp": time.time(),
+                "question": request.question,
+                "field": field,
+                "intent": result.get('intent'),
+                "confidence": result.get('confidence'),
+                "text_chunks_found": result.get('text_chunks_found', 0),
+                "figures_found": result.get('figures_found', 0),
+                "latency_ms": latency_ms,
+                "citations_count": len(result.get('citations', [])),
+                "error": None
+            }
+            logger.info(f"STRUCTURED_LOG: {json.dumps(log_data)}")
+        
         # Log the result
         logger.info(f"Generated response: {result['text_chunks_found']} text chunks, "
-                   f"{result['figures_found']} figures, confidence: {result['confidence']}")
+                   f"{result['figures_found']} figures, confidence: {result['confidence']}, "
+                   f"latency: {latency_ms}ms")
         
         return QuestionResponse(**result)
         
     except Exception as e:
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        # Structured error logging if enabled
+        if STRUCTURED_LOGS:
+            log_data = {
+                "timestamp": time.time(),
+                "question": request.question,
+                "field": request.field,
+                "error": str(e),
+                "latency_ms": latency_ms
+            }
+            logger.error(f"STRUCTURED_ERROR: {json.dumps(log_data)}")
+        
         logger.error(f"Error processing question: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing question: {e}")
 
@@ -191,7 +234,9 @@ async def get_stats():
     try:
         from .tools.rag_text import get_text_rag
         from .tools.rag_image import get_image_rag
-        from .tools.qm import get_question_matrix
+        from .tools.field_detect import get_available_fields
+        from .tools.seed_facts import load_facts
+        import chromadb
         
         stats = {}
         
@@ -200,6 +245,17 @@ async def get_stats():
             text_rag = get_text_rag()
             text_collection = text_rag._get_collection()
             stats["text_chunks"] = text_collection.count()
+            
+            # Get per-field counts
+            results = text_collection.get(include=['metadatas'])
+            field_counts = {}
+            for metadata in results['metadatas']:
+                if metadata and 'field' in metadata:
+                    field = metadata['field']
+                    if field and field != 'NONE':
+                        field_counts[field] = field_counts.get(field, 0) + 1
+            stats["field_counts"] = field_counts
+            
         except Exception as e:
             stats["text_chunks"] = f"error: {e}"
             
@@ -211,24 +267,54 @@ async def get_stats():
         except Exception as e:
             stats["image_figures"] = f"error: {e}"
             
-        # Question Matrix stats
+        # Last ingest time
         try:
-            qm = get_question_matrix()
-            stats["question_patterns"] = len(qm.rows)
-            stats["intent_categories"] = len(qm.by_intent)
+            if STAMP_PATH_OBJ.exists():
+                stats["last_ingest_time"] = STAMP_PATH_OBJ.stat().st_mtime
+            else:
+                stats["last_ingest_time"] = "unknown"
         except Exception as e:
-            stats["question_matrix"] = f"error: {e}"
+            stats["last_ingest_time"] = f"error: {e}"
             
-        # Field stats
+        # Top aspects (from text metadata)
         try:
-            field_detector = get_field_detector()
-            stats["known_fields"] = len(field_detector.get_known_fields())
+            results = text_collection.get(include=['metadatas'])
+            aspect_counts = {}
+            for metadata in results['metadatas']:
+                if metadata and 'aspect' in metadata:
+                    aspects = metadata['aspect']
+                    if isinstance(aspects, str):
+                        # Parse string representation
+                        aspects = aspects.strip("[]'").split(',')
+                    if isinstance(aspects, list):
+                        for aspect in aspects:
+                            aspect = aspect.strip().strip("'\"")
+                            if aspect:
+                                aspect_counts[aspect] = aspect_counts.get(aspect, 0) + 1
+            
+            # Get top 5 aspects
+            top_aspects = sorted(aspect_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            stats["top_aspects"] = dict(top_aspects)
+            
         except Exception as e:
-            stats["known_fields"] = f"error: {e}"
+            stats["top_aspects"] = f"error: {e}"
+            
+        # Available fields
+        try:
+            available_fields = get_available_fields(str(text_rag.chroma_dir))
+            stats["available_fields"] = list(available_fields)
+        except Exception as e:
+            stats["available_fields"] = f"error: {e}"
             
         return {
             "knowledge_base": stats,
-            "api_version": "1.0.0"
+            "api_version": "1.0.0",
+            "feature_flags": {
+                "progressive_relax": os.getenv("ENABLE_PROGRESSIVE_RELAX", "False"),
+                "caption_first": os.getenv("ENABLE_CAPTION_FIRST", "False"),
+                "seed_facts": os.getenv("ENABLE_SEED_FACTS", "False"),
+                "structured_logs": os.getenv("STRUCTURED_LOGS", "False")
+            }
         }
         
     except Exception as e:

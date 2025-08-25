@@ -1,0 +1,45 @@
+
+GEOCHEMICAL SURVEY REPORT
+SEMURUP GEOTHERMAL FIELD
+==========================
+
+1. EXECUTIVE SUMMARY
+====================
+This report presents the results of geochemical sampling and analysis conducted 
+at the Semurup geothermal field in Jambi, Sumatra, Indonesia.
+
+2. SAMPLING METHODOLOGY
+=======================
+- Sample collection: 5 hot spring locations
+- Analysis parameters: Temperature, pH, conductivity, major ions
+- Sampling depth: Surface to -200m
+- Analysis method: Standard geochemical laboratory procedures
+
+3. RESULTS
+==========
+Sample Locations:
+- SEM001: Coordinates (758138, 9777737), Temperature 85°C, pH 7.2
+- SEM002: Coordinates (758200, 9777800), Temperature 92°C, pH 6.8
+- SEM003: Coordinates (758150, 9777750), Temperature 78°C, pH 7.5
+- SEM004: Coordinates (758180, 9777780), Temperature 88°C, pH 7.0
+- SEM005: Coordinates (758220, 9777820), Temperature 95°C, pH 6.9
+
+4. GEOCHEMICAL INTERPRETATION
+=============================
+- High silica concentrations (98-158 mg/L) indicate reservoir temperatures
+- Na-K geothermometry suggests reservoir temperatures of 180-220°C
+- Cl-SO4 ratios indicate mixing with shallow groundwater
+- High temperature samples (>90°C) show potential for geothermal development
+
+5. RECOMMENDATIONS
+==================
+- Continue monitoring of high-temperature springs
+- Conduct additional sampling at deeper levels
+- Implement geochemical monitoring program
+- Consider drilling targets based on geochemical anomalies
+
+6. CONCLUSIONS
+==============
+The geochemical survey indicates favorable conditions for geothermal development
+at the Semurup field. High temperatures and favorable geochemical signatures
+suggest the presence of a viable geothermal reservoir.

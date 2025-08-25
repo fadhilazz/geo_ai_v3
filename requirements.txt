@@ -1,0 +1,48 @@
+# Core dependencies for geo_ai_v3 ingestion and QA pipeline
+
+# Vector database and embeddings
+chromadb>=0.4.15
+sentence-transformers>=2.2.2
+open_clip_torch>=2.20.0
+
+# PDF processing
+pymupdf>=1.23.0
+pillow>=10.0.0
+
+# Text processing and fuzzy matching
+rapidfuzz>=3.5.0
+tiktoken>=0.5.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+tqdm>=4.66.0
+
+# Date utilities
+python-dateutil>=2.8.0
+
+# QA Engine dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+langchain-openai>=0.0.5
+langgraph>=0.0.40
+pydantic>=2.0.0
+
+# HTTP client for testing
+httpx>=0.25.0
+
+# Excel reading
+openpyxl>=3.1.0
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Optional: PyTorch for GPU acceleration (will be installed by sentence-transformers/open_clip)
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# Development dependencies (optional)
+# black>=23.0.0
+# flake8>=6.0.0
+# mypy>=1.5.0

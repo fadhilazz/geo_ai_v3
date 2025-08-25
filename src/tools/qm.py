@@ -2,6 +2,9 @@
 
 import logging
 import pandas as pd
+import json
+import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from sentence_transformers import SentenceTransformer
@@ -9,47 +12,46 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-def load_qm(path: str) -> pd.DataFrame:
+QM_COLS = ["id","user_question","intent_tag","primary_aspect","secondary_aspects",
+           "discipline_hints","method_or_topic_hints","requires_twin","twin_query_template",
+           "retrieval_filter_hint","expected_outputs","eval_keywords","priority"]
+
+def load_qm(path: str) -> List[Dict]:
     """Load Question Matrix from xlsx or csv file with autodetect.
     
     Args:
         path: Path to question matrix file (.xlsx or .csv)
         
     Returns:
-        DataFrame with normalized headers
+        List of dictionaries with normalized headers
     """
-    path_obj = Path(path)
+    p = Path(path)
+    if not p.exists():
+        # try alternate extension
+        alt = p.with_suffix(".csv") if p.suffix.lower()==".xlsx" else p.with_suffix(".xlsx")
+        if alt.exists(): 
+            p = alt
+        else: 
+            raise FileNotFoundError(f"QM not found: {path}")
     
-    if not path_obj.exists():
-        raise FileNotFoundError(f"Question Matrix file not found: {path}")
+    df = pd.read_excel(p) if p.suffix.lower()==".xlsx" else pd.read_csv(p)
     
-    # Autodetect file type
-    if path_obj.suffix.lower() == '.xlsx':
-        logger.info(f"Loading Question Matrix from Excel: {path}")
-        df = pd.read_excel(path)
-    elif path_obj.suffix.lower() == '.csv':
-        logger.info(f"Loading Question Matrix from CSV: {path}")
-        df = pd.read_csv(path)
-    else:
-        # Try both formats
-        try:
-            logger.info(f"Trying Excel format for: {path}")
-            df = pd.read_excel(path)
-        except Exception:
-            try:
-                logger.info(f"Trying CSV format for: {path}")
-                df = pd.read_csv(path)
-            except Exception as e:
-                raise ValueError(f"Could not load Question Matrix from {path}. Tried both xlsx and csv formats. Error: {e}")
+    # normalize headers
+    df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
     
-    # Normalize headers (lowercase, replace spaces with underscores)
-    df.columns = [col.lower().replace(' ', '_').replace('-', '_') for col in df.columns]
+    # coerce missing required columns
+    missing = [c for c in QM_COLS if c not in df.columns]
+    if missing: 
+        raise ValueError(f"QM missing columns: {missing}")
+    
+    # unify types
+    df["requires_twin"] = df["requires_twin"].astype(str).str.upper().str.contains("YES")
     
     logger.info(f"Loaded Question Matrix with {len(df)} rows and columns: {list(df.columns)}")
-    return df
+    return df[QM_COLS].to_dict(orient="records")
 
-def by_intent(rows: pd.DataFrame) -> Dict[str, List[Dict]]:
-    """Group matrix rows by intent.
+def by_intent_df(rows: pd.DataFrame) -> Dict[str, List[Dict]]:
+    """Group matrix rows by intent (DataFrame version).
     
     Args:
         rows: Question Matrix DataFrame
@@ -78,23 +80,23 @@ def by_intent(rows: pd.DataFrame) -> Dict[str, List[Dict]]:
     logger.info(f"Grouped Question Matrix by {len(intent_groups)} intents using column '{intent_column}'")
     return intent_groups
 
-def infer_intent(question: str, rows: pd.DataFrame) -> Tuple[str, float]:
+def infer_intent(question: str, rows: List[Dict]) -> Tuple[str, float]:
     """Infer intent from question using E5 exemplar + keywords.
     
     Args:
         question: User question
-        rows: Question Matrix DataFrame
+        rows: Question Matrix rows as list of dicts
         
     Returns:
         Tuple of (intent, confidence_score)
     """
-    if rows.empty:
+    if not rows:
         return "unknown", 0.0
     
     # Find intent column name
     intent_column = None
     for col in ['intent', 'intent_tag']:
-        if col in rows.columns:
+        if col in rows[0].keys():
             intent_column = col
             break
     
@@ -105,17 +107,17 @@ def infer_intent(question: str, rows: pd.DataFrame) -> Tuple[str, float]:
     exemplars = []
     keywords = []
     
-    for _, row in rows.iterrows():
+    for row in rows:
         # Check for exemplar question in different possible columns
         for col in ['exemplar_question', 'user_question']:
-            if col in row and pd.notna(row[col]):
+            if col in row and row[col]:
                 exemplars.append(row[col])
                 break
         
         # Collect keywords from various columns
         keyword_cols = ['keywords', 'retrieval_hint', 'question_pattern', 'eval_keywords']
         for col in keyword_cols:
-            if col in row and pd.notna(row[col]):
+            if col in row and row[col]:
                 keywords.extend(str(row[col]).split(','))
     
     # Use E5 model for similarity
@@ -134,17 +136,17 @@ def infer_intent(question: str, rows: pd.DataFrame) -> Tuple[str, float]:
             
             # Find corresponding intent
             exemplar_questions = []
-            for _, row in rows.iterrows():
+            for row in rows:
                 for col in ['exemplar_question', 'user_question']:
-                    if col in row and pd.notna(row[col]):
+                    if col in row and row[col]:
                         exemplar_questions.append(row[col])
                         break
             
             if exemplar_questions and best_idx < len(exemplar_questions):
                 # Find matching row
-                for _, row in rows.iterrows():
+                for row in rows:
                     for col in ['exemplar_question', 'user_question']:
-                        if col in row and pd.notna(row[col]) and row[col] == exemplar_questions[best_idx]:
+                        if col in row and row[col] and row[col] == exemplar_questions[best_idx]:
                             intent = row.get(intent_column, 'unknown')
                             return intent, float(best_score)
         
@@ -152,14 +154,14 @@ def infer_intent(question: str, rows: pd.DataFrame) -> Tuple[str, float]:
         question_lower = question.lower()
         keyword_scores = {}
         
-        for _, row in rows.iterrows():
+        for row in rows:
             intent = row.get(intent_column, 'unknown')
             if intent not in keyword_scores:
                 keyword_scores[intent] = 0
             
             # Check keywords
             for col in ['keywords', 'retrieval_hint', 'question_pattern', 'eval_keywords']:
-                if col in row and pd.notna(row[col]):
+                if col in row and row[col]:
                     row_keywords = str(row[col]).lower().split(',')
                     for keyword in row_keywords:
                         keyword = keyword.strip()
@@ -176,12 +178,12 @@ def infer_intent(question: str, rows: pd.DataFrame) -> Tuple[str, float]:
     
     return "unknown", 0.0
 
-def filters_for_intent(intent: str, rows: pd.DataFrame, field: Optional[str] = None) -> Dict:
+def filters_for_intent(intent: str, rows: List[Dict], field: Optional[str] = None) -> Dict:
     """Generate filters for intent with optional field filter.
     
     Args:
         intent: Detected intent
-        rows: Question Matrix DataFrame
+        rows: Question Matrix rows as list of dicts
         field: Optional field to filter by
         
     Returns:
@@ -192,7 +194,7 @@ def filters_for_intent(intent: str, rows: pd.DataFrame, field: Optional[str] = N
     # Find intent column name
     intent_column = None
     for col in ['intent', 'intent_tag']:
-        if col in rows.columns:
+        if col in rows[0].keys():
             intent_column = col
             break
     
@@ -200,13 +202,13 @@ def filters_for_intent(intent: str, rows: pd.DataFrame, field: Optional[str] = N
         return filters
     
     # Find rows matching intent
-    intent_rows = rows[rows[intent_column] == intent]
+    intent_rows = [row for row in rows if row.get(intent_column) == intent]
     
-    if not intent_rows.empty:
-        row = intent_rows.iloc[0]
+    if intent_rows:
+        row = intent_rows[0]
         
         # Add retrieval filter hints
-        if 'retrieval_filter_hint' in row and pd.notna(row['retrieval_filter_hint']):
+        if 'retrieval_filter_hint' in row and row['retrieval_filter_hint']:
             filter_hint = str(row['retrieval_filter_hint'])
             # Parse filter hint (simple key=value format)
             for part in filter_hint.split(','):
@@ -220,3 +222,38 @@ def filters_for_intent(intent: str, rows: pd.DataFrame, field: Optional[str] = N
     
     logger.info(f"Generated filters for intent '{intent}': {filters}")
     return filters
+
+def by_intent(rows: List[Dict]) -> Dict[str, List[Dict]]:
+    """Group matrix rows by intent.
+    
+    Args:
+        rows: Question Matrix rows as list of dicts
+        
+    Returns:
+        Dictionary mapping intent to list of row data
+    """
+    d = {}
+    for r in rows:
+        d.setdefault(r["intent_tag"], []).append(r)
+    return d
+
+def filters_for_row(row: Dict, field: str = None) -> Dict:
+    """Generate filters for a specific row with optional field filter.
+    
+    Args:
+        row: Question Matrix row as dict
+        field: Optional field to filter by
+        
+    Returns:
+        Dictionary of filters for Chroma query
+    """
+    # row["retrieval_filter_hint"] is JSON-like; tolerate single quotes
+    hint = row.get("retrieval_filter_hint") or "{}"
+    hint = hint.replace("'", '"')
+    try: 
+        w = json.loads(hint)
+    except: 
+        w = {}
+    if field: 
+        w = {**w, "field": field}
+    return w

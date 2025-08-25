@@ -15,6 +15,32 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def progressive_query(store, query_text, base_where: dict, relax_order=("topic","method","aspect"), top_k=6):
+    """Progressive filter relaxation for better retrieval.
+    
+    Args:
+        store: Chroma collection
+        query_text: Search query
+        base_where: Base filters to start with
+        relax_order: Order of fields to relax
+        top_k: Number of results to return
+        
+    Returns:
+        Tuple of (results, relax_level, final_where)
+    """
+    def no_hits(res): 
+        return not res or (isinstance(res, dict) and not any(res.get(k) for k in ("ids","documents","embeddings")))
+    
+    where = dict(base_where or {})
+    for level in range(0, len(relax_order)+1):
+        res = store.query(query_texts=[query_text], n_results=top_k, where=where)
+        if not no_hits(res):
+            return res, level, where
+        if level < len(relax_order):
+            where = {k:v for k,v in where.items() if k != relax_order[level]}
+    return {"ids":[],"documents":[]}, len(relax_order), base_where
+
+
 @dataclass
 class TextChunk:
     """Text chunk with metadata."""
@@ -131,25 +157,25 @@ class TextRAG:
             embedder = self._get_embedder()
             query_embedding = embedder.encode([query])
             
-            # Build the search parameters with correct embedding
-            search_params = {
-                'query_embeddings': [query_embedding[0].tolist()],
-                'n_results': top_k,
-                'include': ['documents', 'metadatas', 'distances']
-            }
-            
-            if where:
+            # Use progressive query if enabled
+            if ENABLE_PROGRESSIVE_RELAX and where:
                 # Convert filters to Chroma format
                 chroma_where = self._build_chroma_filters(where)
                 if chroma_where:
-                    search_params['where'] = chroma_where
-                    
-            # Perform search
-            results = collection.query(**search_params)
+                    results, relax_level, final_where = progressive_query(collection, query, chroma_where, top_k=top_k)
+                    logger.info(f"Progressive query relax_level: {relax_level}")
+                else:
+                    # No filters to relax, use direct search
+                    results = self._direct_search(collection, query_embedding, top_k)
+                    relax_level = 0
+            else:
+                # Use direct search
+                results = self._direct_search(collection, query_embedding, where, top_k)
+                relax_level = 0
             
             # Convert to TextChunk objects
             chunks = []
-            if results['documents'] and results['documents'][0]:
+            if results.get('documents') and results['documents'][0]:
                 for i, doc in enumerate(results['documents'][0]):
                     metadata = results['metadatas'][0][i]
                     distance = results['distances'][0][i]
@@ -157,12 +183,30 @@ class TextRAG:
                     chunk = TextChunk.from_chroma_result(doc, metadata, distance)
                     chunks.append(chunk)
                     
-            logger.info(f"Text search for '{query}' with filters {where}: found {len(chunks)} results")
+            logger.info(f"Text search for '{query}' with filters {where}: found {len(chunks)} results (relax_level: {relax_level})")
             return chunks
             
         except Exception as e:
             logger.error(f"Error searching text collection: {e}")
             return []
+    
+    def _direct_search(self, collection, query_embedding, where: Optional[Dict] = None, top_k: int = TEXT_RETRIEVAL_TOP_K):
+        """Perform direct search without progressive relaxation."""
+        # Build the search parameters with correct embedding
+        search_params = {
+            'query_embeddings': [query_embedding[0].tolist()],
+            'n_results': top_k,
+            'include': ['documents', 'metadatas', 'distances']
+        }
+        
+        if where:
+            # Convert filters to Chroma format
+            chroma_where = self._build_chroma_filters(where)
+            if chroma_where:
+                search_params['where'] = chroma_where
+                
+        # Perform search
+        return collection.query(**search_params)
             
     def _build_chroma_filters(self, where: Dict) -> Dict:
         """Build Chroma-compatible filter dictionary.

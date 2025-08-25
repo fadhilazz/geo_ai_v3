@@ -13,7 +13,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from .app_graph import get_qa_workflow
-from .tools.field_detect import get_available_fields
+from .tools.field_detect import get_available_fields, detect_field
 
 try:
     from .config import STRUCTURED_LOGS, STAMP_PATH_OBJ, FACTS_DIR_OBJ

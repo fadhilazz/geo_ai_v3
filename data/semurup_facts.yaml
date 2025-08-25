@@ -1,0 +1,45 @@
+# Semurup Geothermal Field Facts
+# Source: Various field reports and studies
+
+reservoir_temperature:
+  summary: "229-239°C (geothermometer analysis)"
+  method: "Na-K-Ca geothermometer"
+  source: "Geokimia - Laporan Akhir Survey Geokimia Semurup 2022_Final.pdf"
+  page: 12
+  confidence: "High"
+
+location:
+  province: "Jambi"
+  administrative: "Kabupaten Kerinci"
+  coordinates: "To be determined via GIS integration"
+  geological_setting: "Part of Sumatra's volcanic arc system"
+
+surface_manifestations:
+  upflow_zone:
+    location: "Dusun Baru (Sample Code: DB)"
+    temperature: "95.7°C"
+    type: "Mata air panas with steam characteristics"
+    coordinates: "Easting: 762286, Northing: 9780061, Elevation: 824m"
+    source: "DESKRIPSI LAPANGAN MANIFESTASI SEMURUP 2022"
+  
+  outflow_zone:
+    location: "Mukai Pintu"
+    temperature: "39°C"
+    type: "Mata Air Hangat (Warm Spring)"
+    coordinates: "Easting: 762638.981, Northing: 9783988.65, Elevation: 873m"
+    source: "Geokimia - Laporan Akhir Survey Geokimia Semurup 2022_Final.pdf"
+
+geochemical_analysis:
+  sample_selection: "Fluids with high Cl content from western manifestation complex"
+  method_reliability: "Western complex samples show more reliable results than eastern complex"
+  eastern_complex_temps: "110-180°C (considered less reliable)"
+
+mt_survey:
+  stations: 90
+  source: "3D MT and Gravity Modeling - Semurup.pdf"
+  purpose: "Resistivity mapping and claycap identification"
+
+gravity_survey:
+  measurements: 364
+  source: "3D MT and Gravity Modeling - Semurup.pdf"
+  purpose: "Density contrast mapping"

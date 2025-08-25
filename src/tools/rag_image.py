@@ -12,12 +12,12 @@ from sentence_transformers import SentenceTransformer
 try:
     from ..config import (
         CHROMA_IMAGE_DIR_OBJ, IMAGE_RETRIEVAL_TOP_K, 
-        DEFAULT_TEXT_MODEL, IMAGES_BASE_DIR_OBJ
+        DEFAULT_TEXT_MODEL, IMAGES_BASE_DIR_OBJ, ENABLE_CAPTION_FIRST
     )
 except ImportError:
     from src.config import (
         CHROMA_IMAGE_DIR_OBJ, IMAGE_RETRIEVAL_TOP_K, 
-        DEFAULT_TEXT_MODEL, IMAGES_BASE_DIR_OBJ
+        DEFAULT_TEXT_MODEL, IMAGES_BASE_DIR_OBJ, ENABLE_CAPTION_FIRST
     )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ class ImageFigure:
     width: int
     height: int
     field: Optional[str] = None
+    source: Optional[str] = None  # "caption" or "clip"
     
     @classmethod
     def from_chroma_result(cls, document: str, metadata: dict, distance: float) -> 'ImageFigure':
@@ -238,9 +239,7 @@ class ImageRAG:
             return []
             
     def search(self, query: str, where: Optional[Dict] = None, top_k: int = IMAGE_RETRIEVAL_TOP_K) -> List[ImageFigure]:
-        """Search images with efficient fallback strategy.
-        
-        First tries caption-only search (fast), then CLIP similarity if needed.
+        """Search images with caption-first strategy when enabled.
         
         Args:
             query: Search query
@@ -248,27 +247,50 @@ class ImageRAG:
             top_k: Number of results to return
             
         Returns:
-            List of ImageFigure results
+            List of ImageFigure results with source indication
         """
-        # Try caption search first (faster)
-        figures = self.search_by_caption(query, where, top_k)
-        
-        if figures:
-            logger.debug(f"Caption search found {len(figures)} results, skipping CLIP search")
-            return figures
+        if ENABLE_CAPTION_FIRST:
+            # Try caption search first (fast)
+            figures = self.search_by_caption(query, where, top_k)
             
-        logger.debug("Caption search found no results, trying CLIP embedding search")
-        
-        # If no caption results, try CLIP embedding search
-        # For now, we'll use text embedder as a proxy (in real implementation, 
-        # you'd want to use actual CLIP text encoder)
-        try:
-            embedder = self._get_text_embedder()
-            query_embedding = embedder.encode([query], convert_to_numpy=True)[0]
-            return self.search_by_embedding(query_embedding, where, top_k)
-        except Exception as e:
-            logger.error(f"Error in CLIP embedding search: {e}")
-            return []
+            if figures:
+                logger.info(f"Caption-first search found {len(figures)} results (source: caption)")
+                # Add source indicator to figures
+                for figure in figures:
+                    figure.source = "caption"
+                return figures
+                
+            logger.info("Caption-first search found no results, falling back to CLIP")
+            
+            # Fall back to CLIP embedding search
+            try:
+                embedder = self._get_text_embedder()
+                query_embedding = embedder.encode([query], convert_to_numpy=True)[0]
+                figures = self.search_by_embedding(query_embedding, where, top_k)
+                # Add source indicator
+                for figure in figures:
+                    figure.source = "clip"
+                return figures
+            except Exception as e:
+                logger.error(f"Error in CLIP embedding search: {e}")
+                return []
+        else:
+            # Original behavior: try caption first, then CLIP
+            figures = self.search_by_caption(query, where, top_k)
+            
+            if figures:
+                logger.debug(f"Caption search found {len(figures)} results, skipping CLIP search")
+                return figures
+                
+            logger.debug("Caption search found no results, trying CLIP embedding search")
+            
+            try:
+                embedder = self._get_text_embedder()
+                query_embedding = embedder.encode([query], convert_to_numpy=True)[0]
+                return self.search_by_embedding(query_embedding, where, top_k)
+            except Exception as e:
+                logger.error(f"Error in CLIP embedding search: {e}")
+                return []
             
     def _build_chroma_filters(self, where: Dict) -> Dict:
         """Build Chroma-compatible filter dictionary.

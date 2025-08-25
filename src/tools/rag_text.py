@@ -8,9 +8,9 @@ import chromadb
 from dataclasses import dataclass
 
 try:
-    from ..config import CHROMA_TEXT_DIR_OBJ, TEXT_RETRIEVAL_TOP_K
+    from ..config import CHROMA_TEXT_DIR_OBJ, TEXT_RETRIEVAL_TOP_K, ENABLE_PROGRESSIVE_RELAX
 except ImportError:
-    from src.config import CHROMA_TEXT_DIR_OBJ, TEXT_RETRIEVAL_TOP_K
+    from src.config import CHROMA_TEXT_DIR_OBJ, TEXT_RETRIEVAL_TOP_K, ENABLE_PROGRESSIVE_RELAX
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +199,52 @@ class TextRAG:
             return filter_conditions[0]
         else:
             return {"$and": filter_conditions}
+        
+    def progressive_query(self, query: str, base_where: Optional[Dict] = None, 
+                         relax_order: tuple = ("topic", "method", "aspect"), 
+                         top_k: int = TEXT_RETRIEVAL_TOP_K) -> List[TextChunk]:
+        """Progressive filter relaxation for better retrieval.
+        
+        Args:
+            query: Search query
+            base_where: Base filters to start with
+            relax_order: Order of fields to relax
+            top_k: Number of results to return
+            
+        Returns:
+            List of TextChunk results
+        """
+        if not ENABLE_PROGRESSIVE_RELAX:
+            return self.search(query, base_where, top_k)
+        
+        if not base_where:
+            return self.search(query, None, top_k)
+        
+        # Try with base filters first
+        results = self.search(query, base_where, top_k)
+        if results:
+            logger.info("Progressive query: found results with base filters")
+            return results
+        
+        # Progressive relaxation
+        current_where = base_where.copy()
+        
+        for field_to_drop in relax_order:
+            if field_to_drop in current_where:
+                del current_where[field_to_drop]
+                logger.info(f"Progressive relax: dropped '{field_to_drop}' (relax level: {relax_order.index(field_to_drop) + 1})")
+                
+                results = self.search(query, current_where, top_k)
+                if results:
+                    return results
+        
+        # Final fallback: minimal filters
+        final_where = {}
+        if 'field' in base_where:
+            final_where['field'] = base_where['field']
+        
+        logger.info("Progressive relax: final fallback with minimal filters")
+        return self.search(query, final_where, top_k)
         
     def search_with_fallback(self, query: str, where: Optional[Dict] = None, top_k: int = TEXT_RETRIEVAL_TOP_K) -> List[TextChunk]:
         """Search with progressive filter relaxation if no results found.

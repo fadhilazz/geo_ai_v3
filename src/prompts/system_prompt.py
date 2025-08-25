@@ -23,6 +23,8 @@ def get_system_prompt() -> str:
 - Vary sentence structure and openings
 - Write in a conversational but professional tone
 - Avoid formulaic expressions like "Based on the evidence provided" repeatedly
+- Prefer concise direct answers with 2-4 evidence bullets
+- State conflicts or uncertainties explicitly when they exist
 
 **Answer Structure**:
 - Start with a direct response to the question

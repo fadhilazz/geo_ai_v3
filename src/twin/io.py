@@ -43,7 +43,41 @@ def load_xyz_dat(path: Path, value_name: str = "Value", max_rows: int = 100000) 
                            names=['X', 'Y', 'Z', value_name],
                            engine='python')
         
-        logger.info(f"Loaded {len(df)} points from {path}")
+        # Ensure coordinate columns are numeric
+        for col in ['X', 'Y', 'Z']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Remove rows with invalid coordinates
+        initial_count = len(df)
+        df = df.dropna(subset=['X', 'Y', 'Z'])
+        final_count = len(df)
+        
+        if final_count < initial_count:
+            logger.warning(f"Removed {initial_count - final_count} rows with invalid coordinates")
+        
+        # Check if we have valid coordinates
+        if len(df) == 0:
+            logger.error(f"No valid coordinate data found in {path}")
+            return pd.DataFrame()
+        
+        # Verify coordinate ranges are reasonable (not all zeros or extreme values)
+        x_range = df['X'].max() - df['X'].min()
+        y_range = df['Y'].max() - df['Y'].min()
+        
+        if x_range < 1e-6 or y_range < 1e-6:
+            logger.warning(f"Very small coordinate ranges detected: X={x_range:.6f}, Y={y_range:.6f}")
+            logger.warning("This might indicate coordinate system issues")
+        
+        logger.info(f"Loaded {len(df)} valid points from {path}")
+        logger.info(f"Coordinate ranges: X={df['X'].min():.2f} to {df['X'].max():.2f}, Y={df['Y'].min():.2f} to {df['Y'].max():.2f}")
+        
+        # Verify we have the expected columns
+        expected_cols = ['X', 'Y', 'Z', value_name]
+        if not all(col in df.columns for col in expected_cols):
+            logger.error(f"Missing required columns. Expected: {expected_cols}, Got: {list(df.columns)}")
+            return pd.DataFrame()
+        
         return df
         
     except Exception as e:
@@ -192,22 +226,51 @@ def load_field_data(field: str, data_dir: Path) -> Dict[str, Union[pd.DataFrame,
     # Load 3D model data (resistivity/density)
     model_dir = data_dir / "3d_models"
     if model_dir.exists():
+        logger.info(f"Loading 3D models from {model_dir}")
+        
         # Look for any .dat files in the 3d_models directory
-        for model_file in model_dir.glob("*.dat"):
+        model_files = list(model_dir.glob("*.dat"))
+        logger.info(f"Found {len(model_files)} model files: {[f.name for f in model_files]}")
+        
+        resistivity_df = pd.DataFrame()
+        density_df = pd.DataFrame()
+        
+        for model_file in model_files:
             if "res" in model_file.name.lower():
+                logger.info(f"Loading resistivity model: {model_file.name}")
                 df = load_xyz_dat(model_file, "Resistivity")
                 if not df.empty:
-                    result['model_df'] = df
+                    resistivity_df = df
                     logger.info(f"Loaded resistivity model: {len(df)} points")
+                    logger.info(f"Resistivity range: {df['Resistivity'].min():.2e} - {df['Resistivity'].max():.2e}")
+                else:
+                    logger.error(f"Failed to load resistivity model: {model_file.name}")
+                    
             elif "dens" in model_file.name.lower():
+                logger.info(f"Loading density model: {model_file.name}")
                 df = load_xyz_dat(model_file, "Density")
                 if not df.empty:
-                    # Merge with existing model data if available
-                    if not result['model_df'].empty:
-                        result['model_df'] = result['model_df'].merge(df, on=['X', 'Y', 'Z'], how='outer')
-                    else:
-                        result['model_df'] = df
+                    density_df = df
                     logger.info(f"Loaded density model: {len(df)} points")
+                    logger.info(f"Density range: {df['Density'].min():.2f} - {df['Density'].max():.2f}")
+                else:
+                    logger.error(f"Failed to load density model: {model_file.name}")
+        
+        # Merge resistivity and density data
+        if not resistivity_df.empty and not density_df.empty:
+            logger.info("Merging resistivity and density data")
+            # Merge on X, Y, Z coordinates
+            result['model_df'] = resistivity_df.merge(density_df, on=['X', 'Y', 'Z'], how='outer')
+            logger.info(f"Merged model data: {len(result['model_df'])} points")
+            logger.info(f"Final columns: {list(result['model_df'].columns)}")
+        elif not resistivity_df.empty:
+            logger.info("Using resistivity data only")
+            result['model_df'] = resistivity_df
+        elif not density_df.empty:
+            logger.info("Using density data only")
+            result['model_df'] = density_df
+        else:
+            logger.warning("No valid model data loaded")
     
     # Load geochemistry data
     geochem_dir = data_dir / "geochem"

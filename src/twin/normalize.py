@@ -107,7 +107,14 @@ def to_utm_xyz(df: pd.DataFrame, zone: Optional[int] = None, crs_hint: Optional[
     mapping = detect_coord_columns(df)
     
     if not mapping.x_col or not mapping.y_col:
-        logger.warning("No coordinate columns detected")
+        # Only warn if this looks like it should have coordinates (has location-related columns)
+        location_indicators = ['location', 'site', 'sample', 'well', 'borehole', 'station']
+        has_location_data = any(indicator in ' '.join(df.columns).lower() for indicator in location_indicators)
+        
+        if has_location_data:
+            logger.warning("No coordinate columns detected in location data")
+        else:
+            logger.debug("No coordinate columns detected (expected for non-spatial data)")
         return df.copy(), df.copy()
     
     # Create output DataFrame
@@ -190,7 +197,11 @@ def to_utm_xyz(df: pd.DataFrame, zone: Optional[int] = None, crs_hint: Optional[
     # Create needs_georef DataFrame
     if needs_georef:
         needs_georef_df = df.iloc[needs_georef].copy()
-        logger.warning(f"Found {len(needs_georef)} rows without valid coordinates")
+        # Only warn if this is significant (more than 10% of data)
+        if len(needs_georef) > len(df) * 0.1:
+            logger.warning(f"Found {len(needs_georef)} rows without valid coordinates ({len(needs_georef)/len(df)*100:.1f}%)")
+        else:
+            logger.debug(f"Found {len(needs_georef)} rows without valid coordinates (minor issue)")
     else:
         needs_georef_df = pd.DataFrame()
     

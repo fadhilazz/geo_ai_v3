@@ -120,8 +120,9 @@ def reservoir_rocks_from_density(model_df: pd.DataFrame) -> Dict:
     model_df['RockType'] = rock_types
     
     # Calculate statistics
-    rock_counts = model_df['RockType'].value_counts().to_dict()
-    dominant_rock = rock_counts.most_common(1)[0][0] if rock_counts else "Unknown"
+    rock_counts = model_df['RockType'].value_counts()
+    dominant_rock = rock_counts.index[0] if not rock_counts.empty else "Unknown"
+    rock_counts_dict = rock_counts.to_dict()
     
     density_stats = {
         "mean": float(model_df['Density'].mean()),
@@ -135,7 +136,7 @@ def reservoir_rocks_from_density(model_df: pd.DataFrame) -> Dict:
     return {
         "dominant_rock": dominant_rock,
         "density_stats": density_stats,
-        "rock_counts": rock_counts,
+        "rock_counts": rock_counts_dict,
         "total_points": len(model_df)
     }
 
@@ -326,60 +327,209 @@ def calculate_connectivity_score(model_df: pd.DataFrame, threshold: float = 10.0
 
 def analyze_geochemistry(geochem_df: pd.DataFrame) -> Dict:
     """
-    Analyze geochemistry data for anomalies and patterns.
+    Analyze geochemical data for geothermal indicators.
     
     Args:
-        geochem_df: DataFrame with geochemistry data
+        geochem_df: DataFrame with geochemical measurements
     
     Returns:
-        Dictionary with geochemistry metrics
+        Dictionary with geochemical analysis results
     """
     if geochem_df.empty:
-        return {"n_samples": 0, "has_coords": 0.0, "anomaly_counts": {}}
+        return {"error": "No geochemical data available"}
     
-    # Count samples with coordinates
-    has_coords = geochem_df[['X', 'Y']].notna().all(axis=1).sum()
-    coord_percentage = (has_coords / len(geochem_df)) * 100
-    
-    # Find potential anomalies (values > 2 std from mean)
-    anomaly_counts = {}
-    numeric_cols = geochem_df.select_dtypes(include=[np.number]).columns
-    
-    for col in numeric_cols:
-        if col in ['X', 'Y', 'Z']:
-            continue
+    try:
+        # Basic statistics
+        results = {
+            "sample_count": len(geochem_df),
+            "temperature_range": None,
+            "ph_range": None,
+            "cl_content": None,
+            "geothermometer_results": {}
+        }
         
-        values = geochem_df[col].dropna()
-        if len(values) > 10:
-            mean_val = values.mean()
-            std_val = values.std()
-            threshold = mean_val + 2 * std_val
-            
-            anomalies = (values > threshold).sum()
-            if anomalies > 0:
-                anomaly_counts[col] = int(anomalies)
+        # Temperature analysis if available
+        if 'Temperature' in geochem_df.columns:
+            temp_data = geochem_df['Temperature'].dropna()
+            if not temp_data.empty:
+                results["temperature_range"] = [float(temp_data.min()), float(temp_data.max())]
+                results["avg_temperature"] = float(temp_data.mean())
+        
+        # pH analysis if available
+        if 'pH' in geochem_df.columns:
+            ph_data = geochem_df['pH'].dropna()
+            if not ph_data.empty:
+                results["ph_range"] = [float(ph_data.min()), float(ph_data.max())]
+                results["avg_ph"] = float(ph_data.mean())
+        
+        # Chloride content if available
+        if 'Cl' in geochem_df.columns:
+            cl_data = geochem_df['Cl'].dropna()
+            if not cl_data.empty:
+                results["cl_content"] = {
+                    "min": float(cl_data.min()),
+                    "max": float(cl_data.max()),
+                    "avg": float(cl_data.mean())
+                }
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error analyzing geochemistry: {e}")
+        return {"error": str(e)}
+
+
+def density_analysis(field_name: str) -> Dict:
+    """
+    Perform density analysis for a specific field using Digital Twin data.
     
-    # Temperature and pH ranges if available
-    temp_range = None
-    ph_range = None
+    Args:
+        field_name: Name of the geothermal field
+        
+    Returns:
+        Dictionary with density analysis results
+    """
+    try:
+        from .registry import TwinRegistry
+        
+        registry = TwinRegistry()
+        model_data = registry.get(field_name)
+        
+        if not model_data or 'model_df' not in model_data:
+            return {"error": f"No model data available for {field_name}"}
+        
+        density_df = model_data['model_df']
+        
+        if density_df.empty:
+            return {"error": f"Empty model data for {field_name}"}
+        
+        # Check if density column exists
+        if 'Density' not in density_df.columns:
+            return {"error": f"No density data available for {field_name}"}
+        
+        # Verify coordinate columns exist
+        required_cols = ['X', 'Y', 'Z', 'Density']
+        missing_cols = [col for col in required_cols if col not in density_df.columns]
+        if missing_cols:
+            return {"error": f"Missing required columns: {missing_cols}"}
+        
+        # Basic density statistics
+        results = {
+            "field": field_name,
+            "data_points": len(density_df),
+            "density_range": [float(density_df['Density'].min()), float(density_df['Density'].max())],
+            "avg_density": float(density_df['Density'].mean()),
+            "depth_range": [float(density_df['Z'].min()), float(density_df['Z'].max())],
+            "spatial_extent": {
+                "x_range": [float(density_df['X'].min()), float(density_df['X'].max())],
+                "y_range": [float(density_df['Y'].min()), float(density_df['Y'].max())]
+            }
+        }
+        
+        # Rock type classification
+        rock_analysis = reservoir_rocks_from_density(density_df)
+        results["rock_classification"] = rock_analysis
+        
+        # High density areas (>2.8 g/cm3)
+        high_density_mask = density_df['Density'] > 2.8
+        high_density_df = density_df[high_density_mask]
+        
+        if not high_density_df.empty:
+            results["high_density_areas"] = {
+                "count": len(high_density_df),
+                "percentage": float(len(high_density_df) / len(density_df) * 100),
+                "avg_density": float(high_density_df['Density'].mean()),
+                "depth_range": [float(high_density_df['Z'].min()), float(high_density_df['Z'].max())]
+            }
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in density analysis for {field_name}: {e}")
+        return {"error": str(e)}
+
+
+def resistivity_analysis(field_name: str) -> Dict:
+    """
+    Perform resistivity analysis for a specific field using Digital Twin data.
     
-    temp_cols = [col for col in geochem_df.columns if 'temp' in col.lower() or 't°' in col]
-    ph_cols = [col for col in geochem_df.columns if 'ph' in col.lower()]
-    
-    if temp_cols:
-        temp_values = geochem_df[temp_cols[0]].dropna()
-        if len(temp_values) > 0:
-            temp_range = [float(temp_values.min()), float(temp_values.max())]
-    
-    if ph_cols:
-        ph_values = geochem_df[ph_cols[0]].dropna()
-        if len(ph_values) > 0:
-            ph_range = [float(ph_values.min()), float(ph_values.max())]
-    
-    return {
-        "n_samples": len(geochem_df),
-        "has_coords": coord_percentage,
-        "anomaly_counts": anomaly_counts,
-        "temperature_range": temp_range,
-        "ph_range": ph_range
-    }
+    Args:
+        field_name: Name of the geothermal field
+        
+    Returns:
+        Dictionary with resistivity analysis results
+    """
+    try:
+        from .registry import TwinRegistry
+        
+        registry = TwinRegistry()
+        model_data = registry.get(field_name)
+        
+        if not model_data or 'model_df' not in model_data:
+            return {"error": f"No model data available for {field_name}"}
+        
+        resistivity_df = model_data['model_df']
+        
+        if resistivity_df.empty:
+            return {"error": f"Empty model data for {field_name}"}
+        
+        # Check if resistivity column exists
+        if 'Resistivity' not in resistivity_df.columns:
+            return {"error": f"No resistivity data available for {field_name}"}
+        
+        # Verify coordinate columns exist
+        required_cols = ['X', 'Y', 'Z', 'Resistivity']
+        missing_cols = [col for col in required_cols if col not in resistivity_df.columns]
+        if missing_cols:
+            return {"error": f"Missing required columns: {missing_cols}"}
+        
+        # Basic resistivity statistics
+        results = {
+            "field": field_name,
+            "data_points": len(resistivity_df),
+            "resistivity_range": [float(resistivity_df['Resistivity'].min()), float(resistivity_df['Resistivity'].max())],
+            "avg_resistivity": float(resistivity_df['Resistivity'].mean()),
+            "depth_range": [float(resistivity_df['Z'].min()), float(resistivity_df['Z'].max())],
+            "spatial_extent": {
+                "x_range": [float(resistivity_df['X'].min()), float(resistivity_df['X'].max())],
+                "y_range": [float(resistivity_df['Y'].min()), float(resistivity_df['Y'].max())]
+            }
+        }
+        
+        # Caprock analysis
+        caprock_analysis = caprock_iso(resistivity_df, res_threshold=10.0)
+        results["caprock_analysis"] = caprock_analysis
+        
+        # Reservoir analysis
+        reservoir_analysis = reservoir_iso(resistivity_df)
+        results["reservoir_analysis"] = reservoir_analysis
+        
+        # Low resistivity areas (<10 ohm-m)
+        low_res_mask = resistivity_df['Resistivity'] < 10.0
+        low_res_df = resistivity_df[low_res_mask]
+        
+        if not low_res_df.empty:
+            results["low_resistivity_areas"] = {
+                "count": len(low_res_df),
+                "percentage": float(len(low_res_df) / len(resistivity_df) * 100),
+                "avg_resistivity": float(low_res_df['Resistivity'].mean()),
+                "depth_range": [float(low_res_df['Z'].min()), float(low_res_df['Z'].max())]
+            }
+        
+        # High resistivity areas (>200 ohm-m)
+        high_res_mask = resistivity_df['Resistivity'] > 200.0
+        high_res_df = resistivity_df[high_res_mask]
+        
+        if not high_res_df.empty:
+            results["high_resistivity_areas"] = {
+                "count": len(high_res_df),
+                "percentage": float(len(high_res_df) / len(resistivity_df) * 100),
+                "avg_resistivity": float(high_res_df['Resistivity'].mean()),
+                "depth_range": [float(high_res_df['Z'].min()), float(high_res_df['Z'].max())]
+            }
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in resistivity analysis for {field_name}: {e}")
+        return {"error": str(e)}

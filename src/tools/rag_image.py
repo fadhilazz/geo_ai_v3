@@ -12,13 +12,15 @@ from sentence_transformers import SentenceTransformer
 try:
     from ..config import (
         CHROMA_IMAGE_DIR_OBJ, IMAGE_RETRIEVAL_TOP_K, 
-        DEFAULT_TEXT_MODEL, IMAGES_BASE_DIR_OBJ, ENABLE_CAPTION_FIRST
+        DEFAULT_TEXT_MODEL, IMAGES_BASE_DIR_OBJ, ENABLE_CAPTION_FIRST, ENABLE_PROGRESSIVE_RELAX
     )
+    from .rag_text import progressive_query
 except ImportError:
     from src.config import (
         CHROMA_IMAGE_DIR_OBJ, IMAGE_RETRIEVAL_TOP_K, 
-        DEFAULT_TEXT_MODEL, IMAGES_BASE_DIR_OBJ, ENABLE_CAPTION_FIRST
+        DEFAULT_TEXT_MODEL, IMAGES_BASE_DIR_OBJ, ENABLE_CAPTION_FIRST, ENABLE_PROGRESSIVE_RELAX
     )
+    from src.tools.rag_text import progressive_query
 
 logger = logging.getLogger(__name__)
 
@@ -158,25 +160,25 @@ class ImageRAG:
         collection = self._get_collection()
         
         try:
-            # Build the search parameters
-            search_params = {
-                'query_texts': [query],
-                'n_results': top_k,
-                'include': ['documents', 'metadatas', 'distances']
-            }
-            
-            if where:
+            # Use progressive query if enabled
+            if ENABLE_PROGRESSIVE_RELAX and where:
                 # Convert filters to Chroma format
                 chroma_where = self._build_chroma_filters(where)
                 if chroma_where:
-                    search_params['where'] = chroma_where
-                    
-            # Perform search
-            results = collection.query(**search_params)
+                    results, relax_level, final_where = progressive_query(collection, query, chroma_where, top_k=top_k)
+                    logger.info(f"Progressive caption search relax_level: {relax_level}")
+                else:
+                    # No filters to relax, use direct search
+                    results = self._direct_caption_search(collection, query, top_k)
+                    relax_level = 0
+            else:
+                # Use direct search
+                results = self._direct_caption_search(collection, query, where, top_k)
+                relax_level = 0
             
             # Convert to ImageFigure objects
             figures = []
-            if results['documents'] and results['documents'][0]:
+            if results.get('documents') and results['documents'][0]:
                 for i, doc in enumerate(results['documents'][0]):
                     metadata = results['metadatas'][0][i]
                     distance = results['distances'][0][i]
@@ -184,12 +186,30 @@ class ImageRAG:
                     figure = ImageFigure.from_chroma_result(doc, metadata, distance)
                     figures.append(figure)
                     
-            logger.info(f"Caption search for '{query}' with filters {where}: found {len(figures)} results")
+            logger.info(f"Caption search for '{query}' with filters {where}: found {len(figures)} results (relax_level: {relax_level})")
             return figures
             
         except Exception as e:
             logger.error(f"Error searching image collection by caption: {e}")
             return []
+    
+    def _direct_caption_search(self, collection, query: str, where: Optional[Dict] = None, top_k: int = IMAGE_RETRIEVAL_TOP_K):
+        """Perform direct caption search without progressive relaxation."""
+        # Build the search parameters
+        search_params = {
+            'query_texts': [query],
+            'n_results': top_k,
+            'include': ['documents', 'metadatas', 'distances']
+        }
+        
+        if where:
+            # Convert filters to Chroma format
+            chroma_where = self._build_chroma_filters(where)
+            if chroma_where:
+                search_params['where'] = chroma_where
+                
+        # Perform search
+        return collection.query(**search_params)
             
     def search_by_embedding(self, query_embedding: np.ndarray, where: Optional[Dict] = None, top_k: int = IMAGE_RETRIEVAL_TOP_K) -> List[ImageFigure]:
         """Search images by CLIP embedding similarity.
@@ -205,25 +225,27 @@ class ImageRAG:
         collection = self._get_collection()
         
         try:
-            # Build the search parameters
-            search_params = {
-                'query_embeddings': [query_embedding.tolist()],
-                'n_results': top_k,
-                'include': ['documents', 'metadatas', 'distances']
-            }
-            
-            if where:
+            # Use progressive query if enabled
+            if ENABLE_PROGRESSIVE_RELAX and where:
                 # Convert filters to Chroma format
                 chroma_where = self._build_chroma_filters(where)
                 if chroma_where:
-                    search_params['where'] = chroma_where
-                    
-            # Perform search
-            results = collection.query(**search_params)
+                    # For embedding search, we need to use a different approach
+                    # since progressive_query expects text queries
+                    results = self._direct_embedding_search(collection, query_embedding, chroma_where, top_k)
+                    relax_level = 0  # For now, embedding search doesn't use progressive relaxation
+                else:
+                    # No filters to relax, use direct search
+                    results = self._direct_embedding_search(collection, query_embedding, None, top_k)
+                    relax_level = 0
+            else:
+                # Use direct search
+                results = self._direct_embedding_search(collection, query_embedding, where, top_k)
+                relax_level = 0
             
             # Convert to ImageFigure objects
             figures = []
-            if results['documents'] and results['documents'][0]:
+            if results.get('documents') and results['documents'][0]:
                 for i, doc in enumerate(results['documents'][0]):
                     metadata = results['metadatas'][0][i]
                     distance = results['distances'][0][i]
@@ -231,12 +253,30 @@ class ImageRAG:
                     figure = ImageFigure.from_chroma_result(doc, metadata, distance)
                     figures.append(figure)
                     
-            logger.info(f"CLIP embedding search with filters {where}: found {len(figures)} results")
+            logger.info(f"CLIP embedding search with filters {where}: found {len(figures)} results (relax_level: {relax_level})")
             return figures
             
         except Exception as e:
             logger.error(f"Error searching image collection by embedding: {e}")
             return []
+    
+    def _direct_embedding_search(self, collection, query_embedding: np.ndarray, where: Optional[Dict] = None, top_k: int = IMAGE_RETRIEVAL_TOP_K):
+        """Perform direct embedding search without progressive relaxation."""
+        # Build the search parameters
+        search_params = {
+            'query_embeddings': [query_embedding.tolist()],
+            'n_results': top_k,
+            'include': ['documents', 'metadatas', 'distances']
+        }
+        
+        if where:
+            # Convert filters to Chroma format
+            chroma_where = self._build_chroma_filters(where)
+            if chroma_where:
+                search_params['where'] = chroma_where
+                
+        # Perform search
+        return collection.query(**search_params)
             
     def search(self, query: str, where: Optional[Dict] = None, top_k: int = IMAGE_RETRIEVAL_TOP_K) -> List[ImageFigure]:
         """Search images with caption-first strategy when enabled.

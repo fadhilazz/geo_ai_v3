@@ -13,7 +13,9 @@ from pydantic import BaseModel
 import uvicorn
 
 from .app_graph import get_qa_workflow
-from .tools.field_detect import get_available_fields
+from .tools.field_detect import get_available_fields, detect_field
+from .twin.adapter import twin_summary, twin_query
+from .twin.registry import list_available_fields as list_twin_fields
 
 try:
     from .config import STRUCTURED_LOGS, STAMP_PATH_OBJ, FACTS_DIR_OBJ
@@ -60,12 +62,39 @@ class QuestionResponse(BaseModel):
     confidence: str
     text_chunks_found: int
     figures_found: int
+    needs_clarification: bool = False
+    clarification_options: List[str] = []
+    plan_debug: Optional[Dict] = None
     error: Optional[str] = None
 
 
 class FieldsResponse(BaseModel):
     """Response model for available fields."""
     fields: List[str]
+
+
+class TwinSummaryResponse(BaseModel):
+    """Response model for twin summary."""
+    field: str
+    summary: Dict
+    error: Optional[str] = None
+
+
+class TwinQueryRequest(BaseModel):
+    """Request model for twin queries."""
+    field: str
+    intent_tag: str
+    params: Optional[Dict] = None
+
+
+class TwinQueryResponse(BaseModel):
+    """Response model for twin queries."""
+    field: str
+    intent_tag: str
+    metrics: Dict
+    execution_time_ms: float
+    cache_hit: bool = False
+    error: Optional[str] = None
 
 
 def get_api_key():
@@ -88,7 +117,10 @@ async def root():
         "docs": "/docs",
         "endpoints": {
             "ask": "POST /ask - Ask a question",
-            "fields": "GET /fields - Get available fields"
+            "fields": "GET /fields - Get available fields",
+            "twin_summary": "GET /twin/summary?field=<field> - Get twin summary",
+            "twin_query": "POST /twin/query - Execute twin query",
+            "twin_fields": "GET /twin/fields - Get available twin fields"
         }
     }
 
@@ -112,7 +144,7 @@ async def ask_question(request: QuestionRequest, api_key: str = Depends(get_api_
         # Get QA workflow
         workflow = get_qa_workflow(api_key)
         
-        # If no field provided, try to detect it
+        # Detect field if not provided
         field = request.field
         if not field:
             # Get available fields from Chroma
@@ -121,7 +153,6 @@ async def ask_question(request: QuestionRequest, api_key: str = Depends(get_api_
             available_fields = get_available_fields(str(text_rag.chroma_dir))
             
             # Detect field using fuzzy matching
-            from .tools.field_detect import detect_field
             detected_field, confidence = detect_field(request.question, available_fields)
             if detected_field and confidence >= 85:  # High confidence threshold
                 field = detected_field
@@ -129,11 +160,33 @@ async def ask_question(request: QuestionRequest, api_key: str = Depends(get_api_
             else:
                 logger.info("No field detected or low confidence, using general mode")
         
-        # Run the workflow
-        result = workflow.run(request.question, field)
+        # Run the workflow with new state-based approach
+        from .app_graph import QAState
+        
+        # Initialize state
+        initial_state = QAState(request.question, field)
+        
+        # Run workflow
+        final_state = workflow.invoke(initial_state)
         
         # Calculate latency
         latency_ms = int((time.time() - start_time) * 1000)
+        
+        # Check for clarification needs
+        if hasattr(final_state, 'clarification_needed') and final_state.clarification_needed:
+            return QuestionResponse(
+                answer=final_state.answer,
+                citations=final_state.citations,
+                figures=[],
+                field=field,
+                intent=final_state.intent,
+                confidence=f"{final_state.intent_confidence:.3f}",
+                text_chunks_found=0,
+                figures_found=0,
+                needs_clarification=True,
+                clarification_options=getattr(final_state, 'clarification_options', []),
+                plan_debug=getattr(final_state, 'plan_debug', {})
+            )
         
         # Structured logging if enabled
         if STRUCTURED_LOGS:
@@ -141,22 +194,34 @@ async def ask_question(request: QuestionRequest, api_key: str = Depends(get_api_
                 "timestamp": time.time(),
                 "question": request.question,
                 "field": field,
-                "intent": result.get('intent'),
-                "confidence": result.get('confidence'),
-                "text_chunks_found": result.get('text_chunks_found', 0),
-                "figures_found": result.get('figures_found', 0),
+                "intent": final_state.intent,
+                "confidence": final_state.intent_confidence,
+                "text_chunks_found": len(final_state.text_chunks),
+                "figures_found": len(final_state.figures),
                 "latency_ms": latency_ms,
-                "citations_count": len(result.get('citations', [])),
+                "citations_count": len(final_state.citations),
                 "error": None
             }
             logger.info(f"STRUCTURED_LOG: {json.dumps(log_data)}")
         
         # Log the result
-        logger.info(f"Generated response: {result['text_chunks_found']} text chunks, "
-                   f"{result['figures_found']} figures, confidence: {result['confidence']}, "
+        logger.info(f"Generated response: {len(final_state.text_chunks)} text chunks, "
+                   f"{len(final_state.figures)} figures, confidence: {final_state.intent_confidence:.3f}, "
                    f"latency: {latency_ms}ms")
         
-        return QuestionResponse(**result)
+        return QuestionResponse(
+            answer=final_state.answer,
+            citations=final_state.citations,
+            figures=[],  # Convert figures to dict format if needed
+            field=field,
+            intent=final_state.intent,
+            confidence=f"{final_state.intent_confidence:.3f}",
+            text_chunks_found=len(final_state.text_chunks),
+            figures_found=len(final_state.figures),
+            needs_clarification=False,
+            clarification_options=[],
+            plan_debug=getattr(final_state, 'plan_debug', {})
+        )
         
     except Exception as e:
         latency_ms = int((time.time() - start_time) * 1000)
@@ -170,27 +235,21 @@ async def ask_question(request: QuestionRequest, api_key: str = Depends(get_api_
                 "error": str(e),
                 "latency_ms": latency_ms
             }
-            logger.error(f"STRUCTURED_ERROR: {json.dumps(log_data)}")
+            logger.error(f"STRUCTURED_LOG: {json.dumps(log_data)}")
         
         logger.error(f"Error processing question: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing question: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing question: {str(e)}"
+        )
 
 
 @app.get("/fields", response_model=FieldsResponse)
 async def get_fields():
-    """Get list of available fields from the knowledge base.
-    
-    Returns:
-        List of available field names
-    """
+    """Get available geothermal fields."""
     try:
-        from .tools.rag_text import get_text_rag
-        text_rag = get_text_rag()
-        fields = list(get_available_fields(str(text_rag.chroma_dir)))
-        
-        logger.info(f"Retrieved {len(fields)} available fields")
+        fields = get_available_fields()
         return FieldsResponse(fields=fields)
-        
     except Exception as e:
         logger.error(f"Error getting fields: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting fields: {e}")
@@ -199,143 +258,115 @@ async def get_fields():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    try:
-        # Basic health checks
-        checks = {
-            "api": "ok",
-            "openai_key": "configured" if os.getenv("OPENAI_API_KEY") else "missing"
-        }
-        
-        # Try to load field detector (tests database connections)
-        try:
-            from .tools.rag_text import get_text_rag
-            text_rag = get_text_rag()
-            field_count = len(get_available_fields(str(text_rag.chroma_dir)))
-            checks["database"] = f"ok ({field_count} fields)"
-        except Exception as e:
-            checks["database"] = f"error: {e}"
-            
-        # Determine overall status
-        all_ok = all(
-            status == "ok" or status.startswith("ok (") or status == "configured"
-            for status in checks.values()
-        )
-        
-        status_code = 200 if all_ok else 503
-        
-        return {
-            "status": "healthy" if all_ok else "unhealthy",
-            "checks": checks
-        }
-        
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }
+    return {"status": "healthy", "timestamp": time.time()}
 
 
 @app.get("/stats")
 async def get_stats():
-    """Get knowledge base statistics."""
+    """Get system statistics."""
     try:
-        from .tools.rag_text import get_text_rag
-        from .tools.rag_image import get_image_rag
-        from .tools.field_detect import get_available_fields
-        from .tools.seed_facts import load_facts
-        import chromadb
-        
         stats = {}
         
-        # Text collection stats
+        # Text RAG stats
         try:
+            from .tools.rag_text import get_text_rag
             text_rag = get_text_rag()
             text_collection = text_rag._get_collection()
             stats["text_chunks"] = text_collection.count()
-            
-            # Get per-field counts
-            results = text_collection.get(include=['metadatas'])
-            field_counts = {}
-            for metadata in results['metadatas']:
-                if metadata and 'field' in metadata:
-                    field = metadata['field']
-                    if field and field != 'NONE':
-                        field_counts[field] = field_counts.get(field, 0) + 1
-            stats["field_counts"] = field_counts
-            
         except Exception as e:
-            stats["text_chunks"] = f"error: {e}"
-            
-        # Image collection stats
+            stats["text_chunks"] = f"Error: {e}"
+        
+        # Image RAG stats
         try:
+            from .tools.rag_image import get_image_rag
             image_rag = get_image_rag()
             image_collection = image_rag._get_collection()
             stats["image_figures"] = image_collection.count()
         except Exception as e:
-            stats["image_figures"] = f"error: {e}"
-            
-        # Last ingest time
+            stats["image_figures"] = f"Error: {e}"
+        
+        # Question Matrix stats
         try:
-            if STAMP_PATH_OBJ.exists():
-                stats["last_ingest_time"] = STAMP_PATH_OBJ.stat().st_mtime
-            else:
-                stats["last_ingest_time"] = "unknown"
+            from .config import get_qa_paths
+            from .tools.qm import load_qm
+            qm_path = get_qa_paths()['question_matrix']
+            qm_rows = load_qm(str(qm_path))
+            stats["question_matrix_rows"] = len(qm_rows)
         except Exception as e:
-            stats["last_ingest_time"] = f"error: {e}"
-            
-        # Top aspects (from text metadata)
+            stats["question_matrix_rows"] = f"Error: {e}"
+        
+        # Twin stats
         try:
-            results = text_collection.get(include=['metadatas'])
-            aspect_counts = {}
-            for metadata in results['metadatas']:
-                if metadata and 'aspect' in metadata:
-                    aspects = metadata['aspect']
-                    if isinstance(aspects, str):
-                        # Parse string representation
-                        aspects = aspects.strip("[]'").split(',')
-                    if isinstance(aspects, list):
-                        for aspect in aspects:
-                            aspect = aspect.strip().strip("'\"")
-                            if aspect:
-                                aspect_counts[aspect] = aspect_counts.get(aspect, 0) + 1
-            
-            # Get top 5 aspects
-            top_aspects = sorted(aspect_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-            stats["top_aspects"] = dict(top_aspects)
-            
+            twin_fields = list_twin_fields()
+            stats["twin_fields"] = len(twin_fields)
         except Exception as e:
-            stats["top_aspects"] = f"error: {e}"
-            
-        # Available fields
-        try:
-            available_fields = get_available_fields(str(text_rag.chroma_dir))
-            stats["available_fields"] = list(available_fields)
-        except Exception as e:
-            stats["available_fields"] = f"error: {e}"
-            
-        return {
-            "knowledge_base": stats,
-            "api_version": "1.0.0",
-            "feature_flags": {
-                "progressive_relax": os.getenv("ENABLE_PROGRESSIVE_RELAX", "False"),
-                "caption_first": os.getenv("ENABLE_CAPTION_FIRST", "False"),
-                "seed_facts": os.getenv("ENABLE_SEED_FACTS", "False"),
-                "structured_logs": os.getenv("STRUCTURED_LOGS", "False")
-            }
-        }
+            stats["twin_fields"] = f"Error: {e}"
+        
+        # System info
+        stats["timestamp"] = time.time()
+        stats["version"] = "1.0.0"
+        
+        return stats
         
     except Exception as e:
         logger.error(f"Error getting stats: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting stats: {e}")
 
 
+@app.get("/twin/summary", response_model=TwinSummaryResponse)
+async def get_twin_summary(field: str):
+    """Get twin summary for a field."""
+    try:
+        summary = twin_summary(field)
+        if "error" in summary:
+            return TwinSummaryResponse(field=field, error=summary["error"])
+        return TwinSummaryResponse(field=field, summary=summary)
+    except Exception as e:
+        logger.error(f"Error getting twin summary for {field}: {e}")
+        return TwinSummaryResponse(field=field, error=f"Error getting twin summary: {str(e)}")
+
+
+@app.post("/twin/query", response_model=TwinQueryResponse)
+async def execute_twin_query(request: TwinQueryRequest):
+    """Execute a twin query."""
+    try:
+        result = twin_query(request.field, request.intent_tag, "", request.params)
+        if "error" in result:
+            return TwinQueryResponse(
+                field=request.field,
+                intent_tag=request.intent_tag,
+                metrics={},
+                execution_time_ms=0,
+                error=result["error"]
+            )
+        return TwinQueryResponse(
+            field=result["field"],
+            intent_tag=result["intent_tag"],
+            metrics=result["metrics"],
+            execution_time_ms=result["execution_time_ms"],
+            cache_hit=result.get("cache_hit", False)
+        )
+    except Exception as e:
+        logger.error(f"Error executing twin query: {e}")
+        return TwinQueryResponse(
+            field=request.field,
+            intent_tag=request.intent_tag,
+            metrics={},
+            execution_time_ms=0,
+            error=f"Error executing twin query: {str(e)}"
+        )
+
+
+@app.get("/twin/fields", response_model=FieldsResponse)
+async def get_twin_fields():
+    """Get available twin fields."""
+    try:
+        fields = list_twin_fields()
+        return FieldsResponse(fields=fields)
+    except Exception as e:
+        logger.error(f"Error getting twin fields: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting twin fields: {e}")
+
+
 if __name__ == "__main__":
-    # For development - use uvicorn command for production
-    uvicorn.run(
-        "src.api:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=True,
-        log_level="info"
-    )
+    uvicorn.run(app, host="127.0.0.1", port=8000)

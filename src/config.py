@@ -77,6 +77,19 @@ ENABLE_CAPTION_FIRST = False
 ENABLE_SEED_FACTS = False
 STRUCTURED_LOGS = False
 
+# Digital Twin v2 flags (default True for summary, False for expensive scans)
+ENABLE_TWIN_SUMMARY = True
+ENABLE_TWIN_LIVE_QUERIES = True
+TWIN_CACHE_DIR = r"D:\Work\geo_ai_v3\digital_twin\cache"
+TWIN_SUMMARY_DIR = r"D:\Work\geo_ai_v3\digital_twin\summaries"
+TWIN_DATA_DIR = r"D:\Work\geo_ai_v3\data"
+DEFAULT_UTM_ZONE = 47  # adjust if needed; fallback if CRS not inferable
+
+# Convert to Path objects for cross-platform compatibility
+TWIN_CACHE_DIR_OBJ = Path(TWIN_CACHE_DIR)
+TWIN_SUMMARY_DIR_OBJ = Path(TWIN_SUMMARY_DIR)
+TWIN_DATA_DIR_OBJ = Path(TWIN_DATA_DIR)
+
 # Chunking parameters
 DEFAULT_CHUNK_SIZE = 500
 DEFAULT_OVERLAP = 80
